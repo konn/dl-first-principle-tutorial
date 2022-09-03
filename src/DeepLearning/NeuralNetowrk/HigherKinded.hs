@@ -2,6 +2,7 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE DerivingVia #-}
@@ -81,7 +82,7 @@ pattern Layer w b a = Layer' (Weights w b) a
 
 {-# COMPLETE Layer #-}
 
-reLUA, sigmoidA, idA, tanhA :: forall o i a. Activation' i o a
+reLUA, sigmoidA, idA, tanhA :: forall i o a. Activation' i o a
 reLUA = Activation' ReLU
 sigmoidA = Activation' Sigmoid
 idA = Activation' Id
@@ -102,6 +103,7 @@ deriving via
 
 data Weights i o a = Weights !(o (i a)) !(o a)
   deriving (Show, Eq, Ord, Generic1, Generic, Functor, Foldable, Traversable)
+  deriving anyclass (Additive)
 
 type WeightStack = Network Weights
 
@@ -137,6 +139,18 @@ data Network h i fs o a where
     !(h i k a) ->
     !(Network h k fs o a) ->
     Network h i (k ': fs) o a
+
+instance Show (Network h i '[] i a) where
+  showsPrec _ Output = showString "Output"
+  {-# INLINE showsPrec #-}
+
+instance
+  (Show (h i k a), Show (Network h k ks o a)) =>
+  Show (Network h i (k ': ks) o a)
+  where
+  showsPrec d (a :- as) =
+    showParen (d > 9) $
+      showsPrec 10 a . showString " :- " . showsPrec 9 as
 
 type NeuralNetwork = Network Layer
 
@@ -232,8 +246,19 @@ htraverseNetwork f (hfka :- net') =
 
 zipNetworkWith ::
   forall h k t i ls o a b c.
-  (Traversable i, Metric i) =>
-  (forall x y. (Traversable x, Metric x, Metric y, Traversable y) => h x y a -> k x y b -> t x y c) ->
+  (Traversable i, Metric i, Applicative i) =>
+  ( forall x y.
+    ( Traversable x
+    , Applicative x
+    , Metric x
+    , Traversable y
+    , Applicative y
+    , Metric y
+    ) =>
+    h x y a ->
+    k x y b ->
+    t x y c
+  ) ->
   Network h i ls o a ->
   Network k i ls o b ->
   Network t i ls o c
@@ -241,7 +266,7 @@ zipNetworkWith ::
 zipNetworkWith f = go
   where
     go ::
-      (Traversable f', Metric f') =>
+      (Traversable f', Metric f', Applicative f') =>
       Network h f' ls' g' a ->
       Network k f' ls' g' b ->
       Network t f' ls' g' c
@@ -276,9 +301,9 @@ pass ::
   U.Vector (i a, o a) ->
   NeuralNetwork i ls o a ->
   GradientStack i ls o a
-pass loss dataSet n0 =
-  toGradientStack $
-    grad
+pass loss dataSet =
+  toGradientStack
+    . grad
       ( \net ->
           alaf
             Sum
@@ -286,7 +311,6 @@ pass loss dataSet n0 =
             (\(xs0, ys0) -> loss (evalNN net $ auto <$> xs0) $ auto <$> ys0)
             dataSet
       )
-      n0
 
 trainGD ::
   (U.Unbox (i a), U.Unbox (o a), Applicative i, Metric i, Traversable i, Functor o) =>
@@ -301,17 +325,15 @@ trainGD gamma n loss dataSet = last . take n . iterate' step
   where
     step net =
       zipNetworkWith
-        ( \(Layer w b act) (Grads dW dB) ->
-            Layer (w !-! gamma *!! dW) (b ^-^ gamma *^ dB) act
-        )
+        (\(Layer' w act) (Grads' dW) -> Layer' (w ^-^ gamma *^ dW) act)
         net
         (pass loss dataSet net)
 
 crossEntropy :: (Foldable f, Applicative f, Floating a) => LossFunction f a
-crossEntropy ys ys' =
-  L.fold L.mean $ l <$> ys <*> ys'
+crossEntropy ys' ys =
+  L.fold (-L.mean) $ l <$> ys' <*> ys
   where
-    l y y' = y * log y' + (1 - y) * log (1 - y')
+    l y' y = y * log y' + (1 - y) * log (1 - y')
 
 instance
   ( forall x y. (Functor x, Functor y) => Functor (h x y)

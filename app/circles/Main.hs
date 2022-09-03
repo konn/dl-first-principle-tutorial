@@ -9,8 +9,12 @@ module Main (main) where
 import Control.Applicative ((<**>))
 import Control.DeepSeq (force)
 import Control.Exception (evaluate)
+import Control.Lens (view)
+import qualified Data.Vector.Unboxed as U
 import DeepLearning.Circles
 import DeepLearning.NeuralNetowrk.HigherKinded
+import Linear
+import Linear.Affine
 import Linear.V (V)
 import qualified Options.Applicative as Opts
 import System.Random
@@ -55,13 +59,14 @@ main = do
     printf "** 1 Hidden layer of 128 neurons, %d epochs, gamma = %f" iteration learningRate
 
   net128 <-
-    generateNetworkA (randomRIO (0 :: Double, 1.0)) $
-      reLUA @(V 128) :- sigmoidA :- Output
+    generateNetworkA (randomRIO (0, 1e-1)) $
+      reLUA :- sigmoidA @V4 :- Output
 
-  putStrLn $ printf "Initial training accuracy (GD): %.5f%%" $ predictionAccuracy net128 trainSet * 100
-  putStrLn $ printf "Initial validation accuracy (GD): %.5f%%" $ predictionAccuracy net128 testSet * 100
+  putStrLn $ printf "Initial training accuracy (GD): %f" $ predictionAccuracy net128 trainSet * 100
+  putStrLn $ printf "Initial validation accuracy (GD): %f" $ predictionAccuracy net128 testSet * 100
   let net' = trainByGradientDescent learningRate iteration testSet net128
-  putStrLn $ printf "Training accuracy (GD): %.5f%%" $ predictionAccuracy net' trainSet * 100
-  putStrLn $ printf "Validation accuracy (GD): %.5f%%" $ predictionAccuracy net' testSet * 100
+
+  putStrLn $ printf "Training accuracy (GD): %f" $ predictionAccuracy net' trainSet * 100
+  putStrLn $ printf "Validation accuracy (GD): %f" $ predictionAccuracy net' testSet * 100
 
   pure undefined

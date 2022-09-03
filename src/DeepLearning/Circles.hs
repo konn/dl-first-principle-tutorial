@@ -17,7 +17,7 @@ import Data.Vector.Generic.Lens (vectorTraverse)
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.Circles.Types
 import DeepLearning.NeuralNetowrk.HigherKinded
-import Linear (V1, V2)
+import Linear (V1 (..), V2)
 import Linear.Affine
 
 trainByGradientDescent ::
@@ -28,12 +28,14 @@ trainByGradientDescent ::
   NeuralNetwork V2 hs V1 Double
 trainByGradientDescent gamma epochs =
   trainGD gamma epochs crossEntropy
-    . U.map \(ClusteredPoint pt clus) ->
-      (pt ^. _Point, realToFrac $ fromEnum clus)
+    . U.map \(ClusteredPoint pt clus) -> (pt ^. _Point, realToFrac $ fromEnum clus)
 
 predict :: NeuralNetwork V2 hs V1 Double -> Point V2 Double -> Cluster
 predict net =
-  view _Point >>> evalNN net >>> \p -> if p < 0.5 then Cluster0 else Cluster1
+  view _Point >>> evalNN net >>> \(V1 p) ->
+    if not $ isNaN p && isInfinite p
+      then if p < 0.5 then Cluster0 else Cluster1
+      else error "Nan!"
 
 predictionAccuracy ::
   NeuralNetwork V2 hs V1 Double -> U.Vector ClusteredPoint -> Double
