@@ -1,0 +1,9 @@
+resolver: lts-19.21
+
+packages:
+- .
+
+extra-deps:
+  # Workaround for GHC 9.0
+- github: konn/backprop
+  commit: d342e3db0c9d49caf01284d0ff128edf31974cc2
