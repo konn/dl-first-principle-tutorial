@@ -76,6 +76,7 @@ executable iris
     , linear
     , massiv
     , massiv-io
+    , optparse-applicative
     , random
     , reflection
     , vector

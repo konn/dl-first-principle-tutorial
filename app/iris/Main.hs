@@ -1,19 +1,52 @@
+{-# LANGUAGE ApplicativeDo #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Main (main) where
 
+import Control.Applicative ((<**>))
 import qualified Control.Foldl as L
 import qualified Data.ByteString.Lazy as LBS
 import Data.Format.SpaceSeparated
+import Data.Function (on)
 import Data.Functor.Compose (Compose (..))
 import Data.Vector.Generic.Lens (vectorTraverse)
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.Iris
 import Linear
+import qualified Options.Applicative as Opts
 import System.Random
+
+data Opts = Opts {iteration :: !Int, learningRate :: !Double}
+  deriving (Show, Eq, Ord)
+
+optsP :: Opts.ParserInfo Opts
+optsP =
+  Opts.info (p <**> Opts.helper) $
+    Opts.progDesc "A simple iris classifier based on a single layer neural network"
+  where
+    p = do
+      iteration <-
+        Opts.option Opts.auto $
+          Opts.short 'n'
+            <> Opts.value 500
+            <> Opts.showDefault
+            <> Opts.metavar "N"
+            <> Opts.help "# of iteration"
+      learningRate <-
+        Opts.option Opts.auto $
+          Opts.long "gamma"
+            <> Opts.short 'g'
+            <> Opts.value 0.001
+            <> Opts.metavar "GAMMA"
+            <> Opts.showDefault
+            <> Opts.help "Learning rate"
+      pure Opts {..}
 
 main :: IO ()
 main = do
+  opts@Opts {..} <- Opts.execParser optsP
+  print opts
   features <-
     either error (pure . U.convert) . decodeSSV
       =<< LBS.readFile "data/iris/x.dat"
@@ -31,7 +64,7 @@ main = do
          in L.foldOver
               vectorTraverse
               ( (,)
-                  <$> L.premap (quadrance . uncurry (^-^)) L.sum
+                  <$> L.premap (quadrance . uncurry ((^-^) `on` normalize)) L.sum
                   <*> L.premap
                     ( \(l, r) ->
                         if classifyIris l == classifyIris r
@@ -44,9 +77,19 @@ main = do
 
   putStrLn $ "Initial (loss, accuracy): " <> show (loss w0)
 
-  let !w100 = train 0.001 100 (U.zip features classes) w0
-  putStrLn $ "(loss, accuracy) after 100 steps: " <> show (loss w100)
-  let !w200 = train 0.001 100 (U.zip features classes) w100
-  putStrLn $ "(loss, accuracy) after 200 steps: " <> show (loss w200)
-  let !w500 = train 0.001 300 (U.zip features classes) w100
-  putStrLn $ "(loss, accuracy) after 500 steps: " <> show (loss w500)
+  let step n = train learningRate n (U.zip features classes)
+
+  let n = iteration `quot` 4
+  if n > 0
+    then do
+      let !w1 = step n w0
+      putStrLn $ "(loss, accuracy) after " <> show n <> " steps: " <> show (loss w1)
+      let !w2 = step n w1
+      putStrLn $ "(loss, accuracy) after " <> show (2 * n) <> " steps: " <> show (loss w2)
+      let !w3 = step n w2
+      putStrLn $ "(loss, accuracy) after " <> show (3 * n) <> " steps: " <> show (loss w3)
+      let !w4 = step (iteration - n * 3) w3
+      putStrLn $ "(loss, accuracy) after " <> show iteration <> " steps: " <> show (loss w4)
+    else do
+      let w' = step iteration w0
+      putStrLn $ "(loss, accuracy) after " <> show iteration <> " steps: " <> show (loss w')
