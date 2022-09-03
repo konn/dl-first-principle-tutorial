@@ -12,8 +12,7 @@ where
 
 import Control.Arrow ((>>>))
 import qualified Control.Foldl as L
-import Control.Lens (re, view, (^.))
-import Data.Coerce (coerce)
+import Control.Lens (view, (^.))
 import Data.Vector.Generic.Lens (vectorTraverse)
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.Circles.Types
