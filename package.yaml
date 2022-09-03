@@ -24,15 +24,23 @@ dependencies:
 - ad
 - adjunctions
 - backprop
+- bitvec
 - bytestring
 - cassava
+- deepseq
+- diagrams-core
+- diagrams-lib
+- diagrams-rasterific
+- diagrams-svg
 - distributive
 - generic-lens
 - generic-data
 - lens
 - linear
 - massiv
+- matrix
 - massiv-io
+- strict
 - random
 - reflection
 - vector
@@ -57,6 +65,14 @@ executables:
   iris:
     main:         Main.hs
     source-dirs:  app/iris
+    ghc-options:
+    - -O2
+    dependencies: 
+    - dl-first-principle-tutorial
+    - optparse-applicative
+  circles:
+    main:         Main.hs
+    source-dirs:  app/circles
     ghc-options:
     - -O2
     dependencies: 

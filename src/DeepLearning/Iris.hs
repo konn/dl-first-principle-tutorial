@@ -28,19 +28,17 @@ import Control.Lens (alaf, foldMapOf)
 import Data.Csv (DefaultOrdered, FromNamedRecord, FromRecord)
 import Data.Foldable (maximumBy)
 import Data.Functor.Compose (Compose (..))
-import Data.List (iterate')
 import Data.Monoid (Sum (..))
 import Data.Ord (comparing)
-import Data.Reflection (Reifies)
 import Data.Vector.Generic.Lens (vectorTraverse)
 import qualified Data.Vector.Unboxed as U
 import Data.Vector.Unboxed.Deriving (derivingUnbox)
 import GHC.Generics (Generic, Generic1)
 import Generic.Data (Generically1 (..))
-import Linear (Additive ((^-^)), Metric (quadrance), (!*), (*^))
-import Numeric.AD.Internal.Reverse (Reverse, Tape)
-import Numeric.AD.Mode.Reverse (auto, grad)
-import Type.Reflection (Typeable)
+import Linear (Additive ((^-^)), Metric (quadrance), (!*))
+import Numeric.AD.Mode.Reverse (auto)
+import Numeric.Function.Activation (sigmoid)
+import Numeric.Optimisation (gradDescent)
 
 data IrisFeatures a = IrisFeatures {sepalLength, sepalWidth, petalLength, petalWidth :: !a}
   deriving (Show, Eq, Ord, Generic, Generic1, Functor, Foldable, Traversable)
@@ -74,10 +72,6 @@ derivingUnbox
   [|\IrisVector {..} -> (setosa, versicolour, virginica)|]
   [|\(setosa, versicolour, virginica) -> IrisVector {..}|]
 
-sigmoid :: Floating x => x -> x
-{-# INLINE sigmoid #-}
-sigmoid x = recip $ 1 + exp (-x)
-
 forward ::
   (Foldable r, Additive r, Functor v, Floating a) =>
   v (r a) ->
@@ -86,19 +80,7 @@ forward ::
 {-# INLINE forward #-}
 forward w x =
   let value = w !* x
-      activated = sigmoid <$> value
-   in activated
-
--- | A simple gradient desecent with a static learning rate
-gradDescent ::
-  (Additive f, Traversable f, Num a) =>
-  -- | Learning rate
-  a ->
-  (forall s. (Reifies s Tape, Typeable s) => f (Reverse s a) -> Reverse s a) ->
-  f a ->
-  [f a]
-{-# INLINE gradDescent #-}
-gradDescent gamma f = iterate' $ \x -> x ^-^ gamma *^ grad f x
+   in sigmoid <$> value
 
 train ::
   -- | Learning rate

@@ -26,7 +26,12 @@ source-repository head
 library
   exposed-modules:
       Data.Format.SpaceSeparated
+      DeepLearning.Circles
+      DeepLearning.Circles.Types
       DeepLearning.Iris
+      DeepLearning.NeuralNetowrk.HigherKinded
+      Numeric.Function.Activation
+      Numeric.Optimisation
   other-modules:
       Paths_dl_first_principle_tutorial
   hs-source-dirs:
@@ -37,8 +42,14 @@ library
     , adjunctions
     , backprop
     , base >=4.7 && <5
+    , bitvec
     , bytestring
     , cassava
+    , deepseq
+    , diagrams-core
+    , diagrams-lib
+    , diagrams-rasterific
+    , diagrams-svg
     , distributive
     , foldl
     , generic-data
@@ -47,8 +58,48 @@ library
     , linear
     , massiv
     , massiv-io
+    , matrix
     , random
     , reflection
+    , strict
+    , vector
+    , vector-th-unbox
+  default-language: Haskell2010
+
+executable circles
+  main-is: Main.hs
+  other-modules:
+      Paths_dl_first_principle_tutorial
+  hs-source-dirs:
+      app/circles
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -O2
+  build-depends:
+      ad
+    , adjunctions
+    , backprop
+    , base >=4.7 && <5
+    , bitvec
+    , bytestring
+    , cassava
+    , deepseq
+    , diagrams-core
+    , diagrams-lib
+    , diagrams-rasterific
+    , diagrams-svg
+    , distributive
+    , dl-first-principle-tutorial
+    , foldl
+    , generic-data
+    , generic-lens
+    , lens
+    , linear
+    , massiv
+    , massiv-io
+    , matrix
+    , optparse-applicative
+    , random
+    , reflection
+    , strict
     , vector
     , vector-th-unbox
   default-language: Haskell2010
@@ -65,8 +116,14 @@ executable iris
     , adjunctions
     , backprop
     , base >=4.7 && <5
+    , bitvec
     , bytestring
     , cassava
+    , deepseq
+    , diagrams-core
+    , diagrams-lib
+    , diagrams-rasterific
+    , diagrams-svg
     , distributive
     , dl-first-principle-tutorial
     , foldl
@@ -76,9 +133,11 @@ executable iris
     , linear
     , massiv
     , massiv-io
+    , matrix
     , optparse-applicative
     , random
     , reflection
+    , strict
     , vector
     , vector-th-unbox
   default-language: Haskell2010

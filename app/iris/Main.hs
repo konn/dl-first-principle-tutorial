@@ -58,8 +58,7 @@ main = do
       pure $
         randomRIO (0, recip $ fromIntegral $ length $ U.head features)
   putStrLn $ "Initial matrix: " <> show w0
-  let loss :: IrisVector (IrisFeatures Double) -> (Double, Double)
-      loss w =
+  let loss w =
         let !y = U.map (forward w) features
          in L.foldOver
               vectorTraverse
