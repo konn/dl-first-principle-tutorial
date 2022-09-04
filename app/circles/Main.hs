@@ -13,7 +13,7 @@ import Control.Lens
 import DeepLearning.Circles
 import DeepLearning.NeuralNetowrk.HigherKinded
 import Diagrams.Backend.Rasterific
-import Diagrams.Prelude (bg, black, blend, blue, dims2D, lc, p2, red, strokeOpacity, white)
+import Diagrams.Prelude (bg, black, blend, blue, dims2D, green, lc, orange, p2, red, strokeOpacity, white)
 import Linear
 import Linear.Affine
 import Linear.V (V)
@@ -86,7 +86,7 @@ main = do
       , pixelateScalarField
           64
           (view _x . evalNN net' . view _Point)
-          (\α -> blend (min 1.0 $ max 0.0 α) blue red)
+          (\α -> blend (min 1.0 $ max 0.0 α) green orange)
           (p2 (-1.25, -1.25))
           (p2 (1.25, 1.25))
       ]
