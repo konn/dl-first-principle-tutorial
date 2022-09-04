@@ -1,3 +1,5 @@
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -12,6 +14,7 @@
 
 module DeepLearning.Circles.Types
   ( dualCircles,
+    dualSpirals,
     ClusteredPoint (..),
     Cluster (..),
     clusteredPointD,
@@ -23,6 +26,7 @@ import Control.Arrow ((>>>))
 import Control.Lens (foldMapOf, (^.))
 import Control.Monad (guard, join)
 import Data.Bit.ThreadSafe (Bit (..))
+import Data.Coerce (coerce)
 import Data.Csv (ToRecord (..))
 import qualified Data.Csv as Csv
 import Data.Function ((&))
@@ -38,12 +42,28 @@ import System.Random.Stateful
 
 data Cluster = Cluster0 | Cluster1
   deriving (Show, Eq, Ord, Generic, Enum, Bounded)
+  deriving anyclass (Uniform, Finite, Random)
+
+c2b :: Cluster -> Bool
+{-# INLINE c2b #-}
+c2b = \case
+  Cluster0 -> False
+  Cluster1 -> True
+
+b2c :: Bool -> Cluster
+b2c = \case
+  False -> Cluster0
+  True -> Cluster1
+
+instance UniformRange Cluster where
+  uniformRM (l, r) g = do
+    b2c <$> uniformRM (c2b l, c2b r) g
 
 derivingUnbox
   "Cluster"
   [t|Cluster -> Bit|]
-  [|\case Cluster0 -> Bit False; Cluster1 -> Bit True|]
-  [|\(Bit p) -> if p then Cluster1 else Cluster0|]
+  [|coerce c2b|]
+  [|coerce b2c|]
 
 instance Csv.ToField Cluster where
   toField = Csv.toField . fromEnum
@@ -103,16 +123,36 @@ Randomly generates clusters of points scatterred roughly
 around two distinct concentral circles.
 -}
 dualCircles :: RandomGenM g r m => g -> Int -> Double -> Double -> m (U.Vector ClusteredPoint)
-dualCircles g n factor noise = do
-  U.replicateM n $ do
-    ns <- sequence $ join V2 $ randomRM (0, noise) g
-    p <- randomM g
-    let (r, cluster)
-          | p = (factor, Cluster0)
-          | otherwise = (1.0, Cluster1)
-    theta <- randomRM (-pi, pi) g
-    let coord = P $ r *^ V2 (cos theta) (sin theta) ^+^ ns
-    pure ClusteredPoint {..}
+dualCircles g n factor noise = U.replicateM n $ do
+  ns <- sequence $ join V2 $ randomRM (0, noise) g
+  cluster <- randomM g
+  let r = case cluster of
+        Cluster0 -> factor
+        Cluster1 -> 1.0
+  theta <- randomRM (-pi, pi) g
+  let coord = P $ r *^ V2 (cos theta) (sin theta) ^+^ ns
+  pure ClusteredPoint {..}
+
+-- | Dual spirals
+dualSpirals ::
+  RandomGenM g r m =>
+  g ->
+  Int ->
+  Double ->
+  m (Vector ClusteredPoint)
+dualSpirals g n noise = U.replicateM n $ do
+  theta <- randomRM (0, maxTheta) g
+  dev <- sequenceA $ pure $ randomRM (0, noise) g
+  cluster <- randomM g
+  let !r = case cluster of
+        Cluster0 -> 1.0
+        Cluster1 -> -1.0
+      !mag = (1.0 - coreR) * theta / maxTheta + coreR
+      coord = P $ r * mag *^ V2 (-cos theta) (sin theta) ^+^ dev
+  pure ClusteredPoint {..}
+  where
+    !coreR = 1.5 * noise
+    !maxTheta = 780 * 2 * pi / 360
 
 clusteredPointD ::
   ( Dia.V b ~ V2

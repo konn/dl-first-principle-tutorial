@@ -52,6 +52,7 @@ library
     , diagrams-svg
     , directory
     , distributive
+    , dlist
     , filepath
     , foldl
     , generic-data
@@ -63,6 +64,7 @@ library
     , matrix
     , random
     , reflection
+    , split
     , strict
     , vector
     , vector-th-unbox
@@ -91,6 +93,7 @@ executable circles
     , directory
     , distributive
     , dl-first-principle-tutorial
+    , dlist
     , filepath
     , foldl
     , generic-data
@@ -103,6 +106,7 @@ executable circles
     , optparse-applicative
     , random
     , reflection
+    , split
     , strict
     , vector
     , vector-th-unbox
@@ -131,6 +135,7 @@ executable iris
     , directory
     , distributive
     , dl-first-principle-tutorial
+    , dlist
     , filepath
     , foldl
     , generic-data
@@ -143,6 +148,7 @@ executable iris
     , optparse-applicative
     , random
     , reflection
+    , split
     , strict
     , vector
     , vector-th-unbox

@@ -34,6 +34,7 @@ dependencies:
 - diagrams-svg
 - directory
 - distributive
+- dlist
 - filepath
 - generic-lens
 - generic-data
@@ -42,6 +43,7 @@ dependencies:
 - massiv
 - matrix
 - massiv-io
+- split
 - strict
 - random
 - reflection
