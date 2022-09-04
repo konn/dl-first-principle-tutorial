@@ -328,7 +328,14 @@ dualSpiralTest Opts {..} = do
       ("Train", trainSet)
       ("Test", testSet)
 
-    netAdam <- evaluate $ trainByAdam gamma AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-8} epochs trainSet net0
+    netAdam <-
+      evaluate $
+        trainByAdam
+          gamma
+          AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-16}
+          epochs
+          trainSet
+          net0
 
     putStrLn $ printf "Training accuracy (Adam): %f" $ predictionAccuracy netAdam trainSet * 100
     putStrLn $ printf "Validation accuracy (Adam): %f" $ predictionAccuracy netAdam testSet * 100

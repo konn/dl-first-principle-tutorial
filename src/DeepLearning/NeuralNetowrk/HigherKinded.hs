@@ -82,7 +82,8 @@ import Numeric.AD (auto, grad)
 import Numeric.AD.Internal.Reverse (Tape)
 import Numeric.AD.Mode.Reverse (Reverse)
 import Numeric.Function.Activation (relu, sigmoid)
-import System.Random.Stateful (Random, RandomGenM, randomRM)
+import System.Random.MWC.Distributions (normal, standard)
+import System.Random.Stateful (RandomGenM)
 
 data Activation = ReLU | Sigmoid | Tanh | Id
   deriving (Show, Eq, Ord, Generic, Enum, Bounded)
@@ -489,18 +490,21 @@ generateNetworkA =
   sequenceA . mapNetwork (\(Activation' act val) -> Layer' (pure val) act)
 
 randomNetwork ::
-  forall i ls o a g r m.
+  forall i ls o g r m.
   ( RandomGenM g r m
-  , Random a
-  , Floating a
   , Traversable i
   , Applicative i
   ) =>
   g ->
-  Network ActivatorProxy i ls o a ->
-  m (NeuralNetwork i ls o a)
+  Network ActivatorProxy i ls o Double ->
+  m (NeuralNetwork i ls o Double)
 randomNetwork _ Output = pure Output
 randomNetwork g (HProxy act :- net') = do
-  Compose ws <- sequence $ pure $ randomRM (0, sqrt $ recip $ fromIntegral $ length $ pure @i ()) g
-  bs <- sequence $ pure $ randomRM (0, 1) g
+  let s =
+        case act of
+          ReLU -> sqrt $ recip $ fromIntegral (length $ pure @i ()) / 2.0
+          _ -> sqrt $ recip $ fromIntegral $ length $ pure @i ()
+
+  Compose ws <- sequence $ pure $ normal 0.0 s g
+  bs <- sequence $ pure $ standard g
   (Layer ws bs act :-) <$> randomNetwork g net'

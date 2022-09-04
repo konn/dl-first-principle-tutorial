@@ -46,6 +46,7 @@ dependencies:
 - split
 - strict
 - random
+- mwc-random
 - reflection
 - vector
 - vector-th-unbox
