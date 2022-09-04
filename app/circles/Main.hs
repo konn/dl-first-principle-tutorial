@@ -9,15 +9,17 @@ module Main (main) where
 import Control.Applicative ((<**>))
 import Control.DeepSeq (force)
 import Control.Exception (evaluate)
-import Control.Lens (view)
-import qualified Data.Vector.Unboxed as U
+import Control.Lens
 import DeepLearning.Circles
 import DeepLearning.NeuralNetowrk.HigherKinded
+import Diagrams.Backend.Rasterific
+import Diagrams.Prelude (bg, black, blend, blue, dims2D, lc, p2, red, strokeOpacity, white)
 import Linear
 import Linear.Affine
 import Linear.V (V)
 import qualified Options.Applicative as Opts
-import System.Random
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath ((</>))
 import System.Random.Stateful (globalStdGen)
 import Text.Printf (printf)
 
@@ -47,11 +49,21 @@ optsP =
             <> Opts.help "Learning rate"
       pure Opts {..}
 
+workDir :: String
+workDir = "workspace"
+
 main :: IO ()
 main = do
-  trainSet <- evaluate . force =<< dualCircles globalStdGen 200
-  testSet <- evaluate . force =<< dualCircles globalStdGen 100
+  trainSet <- evaluate . force =<< dualCircles globalStdGen 200 0.6 0.1
+  testSet <- evaluate . force =<< dualCircles globalStdGen 100 0.6 0.1
   Opts {..} <- Opts.execParser optsP
+
+  createDirectoryIfMissing True workDir
+  renderRasterific (workDir </> "train.png") (dims2D 256 256) $
+    drawClusteredPoints trainSet & bg white
+  renderRasterific (workDir </> "test.png") (dims2D 256 256) $
+    drawClusteredPoints testSet & bg white
+
   putStrLn $ replicate 20 '-'
   putStrLn "* Circle isolation"
 
@@ -59,14 +71,25 @@ main = do
     printf "** 1 Hidden layer of 128 neurons, %d epochs, gamma = %f" iteration learningRate
 
   net128 <-
-    generateNetworkA (randomRIO (0, 1e-1)) $
-      reLUA :- sigmoidA @V4 :- Output
+    generateNetworkA $
+      unitRandom globalStdGen ReLU
+        :- unitRandom @(V 128) globalStdGen Sigmoid
+        :- Output
 
   putStrLn $ printf "Initial training accuracy (GD): %f" $ predictionAccuracy net128 trainSet * 100
   putStrLn $ printf "Initial validation accuracy (GD): %f" $ predictionAccuracy net128 testSet * 100
-  let net' = trainByGradientDescent learningRate iteration testSet net128
+  let net' = trainByGradientDescent learningRate iteration trainSet net128
+
+  renderRasterific (workDir </> "test-predict.png") (dims2D 256 256) $
+    mconcat
+      [ drawClusteredPoints testSet & lc black & strokeOpacity 1.0
+      , pixelateScalarField
+          64
+          (view _x . evalNN net' . view _Point)
+          (\α -> blend (min 1.0 $ max 0.0 α) blue red)
+          (p2 (-1.25, -1.25))
+          (p2 (1.25, 1.25))
+      ]
 
   putStrLn $ printf "Training accuracy (GD): %f" $ predictionAccuracy net' trainSet * 100
   putStrLn $ printf "Validation accuracy (GD): %f" $ predictionAccuracy net' testSet * 100
-
-  pure undefined

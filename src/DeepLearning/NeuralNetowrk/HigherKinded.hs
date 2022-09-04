@@ -19,6 +19,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE StandaloneKindSignatures #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
@@ -49,6 +50,7 @@ module DeepLearning.NeuralNetowrk.HigherKinded
     htraverseNetwork,
     crossEntropy,
     generateNetworkA,
+    unitRandom,
   )
 where
 
@@ -66,13 +68,13 @@ import Numeric.AD (auto, grad)
 import Numeric.AD.Internal.Reverse (Tape)
 import Numeric.AD.Mode.Reverse (Reverse)
 import Numeric.Function.Activation (relu, sigmoid)
+import System.Random.Stateful (Random, RandomGenM, randomRM)
 
 data Activation = ReLU | Sigmoid | Tanh | Id
   deriving (Show, Eq, Ord, Generic, Enum, Bounded)
 
-newtype Activation' i o a = Activation' {getActivation :: Activation}
+data Activation' m i o a = Activation' {getActivation :: Activation, seed :: m a}
   deriving (Show, Eq, Ord, Generic, Bounded, Functor, Foldable, Traversable)
-  deriving newtype (Enum)
 
 data Layer i o a = Layer' (Weights i o a) Activation
   deriving (Show, Eq, Ord, Generic1, Generic, Functor, Foldable, Traversable)
@@ -82,7 +84,7 @@ pattern Layer w b a = Layer' (Weights w b) a
 
 {-# COMPLETE Layer #-}
 
-reLUA, sigmoidA, idA, tanhA :: forall i o a. Activation' i o a
+reLUA, sigmoidA, idA, tanhA :: forall i o f a. f a -> Activation' f i o a
 reLUA = Activation' ReLU
 sigmoidA = Activation' Sigmoid
 idA = Activation' Id
@@ -376,8 +378,12 @@ instance
 
 generateNetworkA ::
   (Traversable i, Applicative f, Applicative i, Metric i) =>
-  f a ->
-  Network Activation' i ls o a ->
+  Network (Activation' f) i ls o a ->
   f (Network Layer i ls o a)
-generateNetworkA f =
-  sequenceA . mapNetwork (Layer' (pure f) . getActivation)
+generateNetworkA =
+  sequenceA . mapNetwork (\(Activation' act val) -> Layer' (pure val) act)
+
+unitRandom :: forall i o g m a r. (Applicative i, Foldable i, RandomGenM g r m, Random a, RealFloat a) => g -> Activation -> Activation' m i o a
+unitRandom g act = Activation' act (randomRM (0, sqrt $ recip $ fromIntegral n) g)
+  where
+    n = length $ pure @i ()

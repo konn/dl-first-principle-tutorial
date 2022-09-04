@@ -21,8 +21,7 @@ where
 
 import Control.Arrow ((>>>))
 import Control.Lens (foldMapOf, (^.))
-import Control.Monad (guard)
-import Control.Monad.Fix (fix)
+import Control.Monad (guard, join)
 import Data.Bit.ThreadSafe (Bit (..))
 import Data.Csv (ToRecord (..))
 import qualified Data.Csv as Csv
@@ -31,7 +30,6 @@ import qualified Data.Vector as V
 import Data.Vector.Generic.Lens
 import qualified Data.Vector.Unboxed as U
 import Data.Vector.Unboxed.Deriving (derivingUnbox)
-import Diagrams.Prelude (Diagram, bg, blue, centerXY, fc, lcA, moveTo, opacity, pad, red, square, transparent, white)
 import qualified Diagrams.Prelude as Dia
 import GHC.Generics (Generic)
 import Linear
@@ -104,29 +102,16 @@ instance Csv.FromNamedRecord ClusteredPoint where
 Randomly generates clusters of points scatterred roughly
 around two distinct concentral circles.
 -}
-dualCircles :: RandomGenM g r m => g -> Int -> m (U.Vector ClusteredPoint)
-dualCircles g n = do
-  r1 <- randomRM (0.05, 1.0) g
-  r2 <- fix $ \retry -> do
-    r2 <- randomRM (0.05, 1.0) g
-    if abs (r1 - r2) > 0.1
-      then pure r2
-      else retry
-  let dr =
-        minimum
-          [ abs (r1 - r2) / 10
-          , 0.05
-          , r1 / 2
-          , r2 / 2
-          ]
+dualCircles :: RandomGenM g r m => g -> Int -> Double -> Double -> m (U.Vector ClusteredPoint)
+dualCircles g n factor noise = do
   U.replicateM n $ do
+    ns <- sequence $ join V2 $ randomRM (0, noise) g
     p <- randomM g
-    dev <- randomRM (-dr, dr) g
     let (r, cluster)
-          | p = (r1, Cluster0)
-          | otherwise = (r2, Cluster1)
+          | p = (factor, Cluster0)
+          | otherwise = (1.0, Cluster1)
     theta <- randomRM (-pi, pi) g
-    let coord = P $ (r + dev) *^ V2 (cos theta) (sin theta)
+    let coord = P $ r *^ V2 (cos theta) (sin theta) ^+^ ns
     pure ClusteredPoint {..}
 
 clusteredPointD ::
@@ -135,12 +120,12 @@ clusteredPointD ::
   , Dia.Renderable (Dia.Path V2 Double) b
   ) =>
   ClusteredPoint ->
-  Diagrams.Prelude.Diagram b
+  Dia.Diagram b
 clusteredPointD ClusteredPoint {..} =
   let color = case cluster of
-        Cluster0 -> Diagrams.Prelude.red
-        Cluster1 -> Diagrams.Prelude.blue
-   in Dia.circle 0.025 & Diagrams.Prelude.lcA Diagrams.Prelude.transparent & Diagrams.Prelude.fc color & Diagrams.Prelude.moveTo coord
+        Cluster0 -> Dia.red
+        Cluster1 -> Dia.blue
+   in Dia.circle 0.025 & Dia.lcA Dia.transparent & Dia.fc color & Dia.moveTo coord
 
 drawClusteredPoints ::
   ( Metric (Dia.V b)
@@ -155,8 +140,7 @@ drawClusteredPoints ::
 drawClusteredPoints =
   mconcat
     [ foldMapOf vectorTraverse clusteredPointD
-    , const $ Diagrams.Prelude.square 2 & Diagrams.Prelude.opacity 0.0
+    , const $ Dia.square 2 & Dia.opacity 0.0
     ]
-    >>> Diagrams.Prelude.centerXY
-    >>> Diagrams.Prelude.pad 1.25
-    >>> Diagrams.Prelude.bg Diagrams.Prelude.white
+    >>> Dia.centerXY
+    >>> Dia.pad 1.25

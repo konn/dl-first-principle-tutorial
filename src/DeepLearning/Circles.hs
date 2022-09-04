@@ -1,5 +1,8 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module DeepLearning.Circles
@@ -7,18 +10,23 @@ module DeepLearning.Circles
     trainByGradientDescent,
     predict,
     predictionAccuracy,
+    pixelateScalarField,
   )
 where
 
 import Control.Arrow ((>>>))
 import qualified Control.Foldl as L
 import Control.Lens (view, (^.))
+import Data.Function ((&))
 import Data.Vector.Generic.Lens (vectorTraverse)
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.Circles.Types
 import DeepLearning.NeuralNetowrk.HigherKinded
-import Linear (V1 (..), V2)
+import Diagrams.Prelude (Colour, Diagram, N, alignBL, fc, lc, moveTo, opacity, rect, square, strokeOpacity)
+import qualified Diagrams.Prelude as Dia
+import Linear (V1 (..), V2 (..), (*^), (^/))
 import Linear.Affine
+import Type.Reflection (Typeable)
 
 trainByGradientDescent ::
   Double ->
@@ -46,3 +54,29 @@ predictionAccuracy nn =
           if predict nn coord == cluster then 1.0 else 0.0
       )
       L.mean
+
+pixelateScalarField ::
+  (N b ~ Double, Dia.V b ~ V2, Typeable Double, Dia.Renderable (Dia.Path V2 Double) b) =>
+  Int ->
+  (Point V2 Double -> Double) ->
+  (Double -> Colour Double) ->
+  -- | Lower left point
+  Point V2 Double ->
+  -- | Upper right point
+  Point V2 Double ->
+  Diagram b
+pixelateScalarField divs field toColour ll ur =
+  let V2 w h = ur .-. ll
+      dx = min w h / fromIntegral divs
+   in mconcat
+        [ square dx
+          & alignBL
+          & lc col
+          & fc col
+          & moveTo pt
+        | xN <- [0 :: Int .. ceiling (w / dx) - 1]
+        , yN <- [0 :: Int .. ceiling (h / dx) - 1]
+        , let pt = ll .+^ dx *^ V2 (fromIntegral xN) (fromIntegral yN)
+              col = toColour $ field $ pt .+^ V2 dx dx ^/ 2.0
+        ]
+        <> (rect w h & alignBL & moveTo ll & opacity 0.0 & strokeOpacity 0.0)

@@ -32,7 +32,9 @@ dependencies:
 - diagrams-lib
 - diagrams-rasterific
 - diagrams-svg
+- directory
 - distributive
+- filepath
 - generic-lens
 - generic-data
 - lens

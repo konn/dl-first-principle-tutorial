@@ -50,7 +50,9 @@ library
     , diagrams-lib
     , diagrams-rasterific
     , diagrams-svg
+    , directory
     , distributive
+    , filepath
     , foldl
     , generic-data
     , generic-lens
@@ -86,8 +88,10 @@ executable circles
     , diagrams-lib
     , diagrams-rasterific
     , diagrams-svg
+    , directory
     , distributive
     , dl-first-principle-tutorial
+    , filepath
     , foldl
     , generic-data
     , generic-lens
@@ -124,8 +128,10 @@ executable iris
     , diagrams-lib
     , diagrams-rasterific
     , diagrams-svg
+    , directory
     , distributive
     , dl-first-principle-tutorial
+    , filepath
     , foldl
     , generic-data
     , generic-lens
