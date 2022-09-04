@@ -12,9 +12,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE StandaloneKindSignatures #-}
 {-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 
@@ -241,11 +239,6 @@ putNetworkInfo net = do
 
 showDim :: Show a => [a] -> String
 showDim = List.intercalate "x" . map show
-
-type Snoc :: [k] -> k -> [k]
-type family Snoc xs x where
-  Snoc '[] x = '[x]
-  Snoc (x ': xs) y = x ': Snoc xs y
 
 dualCircleTest :: Opts -> IO ()
 dualCircleTest Opts {..} = do
