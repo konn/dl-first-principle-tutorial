@@ -36,22 +36,25 @@ dependencies:
 - distributive
 - dlist
 - filepath
-- generic-lens
+- foldl
 - generic-data
+- generic-lens
+- ghc-typelits-knownnat
 - lens
 - linear
 - massiv
-- matrix
 - massiv-io
+- matrix
+- mwc-random
+- random
+- reflection
 - sized
 - split
 - strict
-- random
-- mwc-random
-- reflection
+- subcategories
+- these
 - vector
 - vector-th-unbox
-- foldl
 
 ghc-options:
 - -Wall
