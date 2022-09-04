@@ -161,7 +161,7 @@ evalLayer (Layer w b f) x =
 
 -- Can we existentialise internal layers?
 data Network h i fs o a where
-  Output :: Network h i '[] i a
+  Output :: h i o a -> Network h i '[] o a
   (:-) ::
     -- TODO: Drop these ad-hoc constraints and move to 'All'
     (Traversable k, Metric k, Applicative k) =>
@@ -169,8 +169,10 @@ data Network h i fs o a where
     !(Network h k fs o a) ->
     Network h i (k ': fs) o a
 
-instance Show (Network h i '[] i a) where
-  showsPrec _ Output = showString "Output"
+instance (Show (h i o a)) => Show (Network h i '[] o a) where
+  showsPrec d (Output h) =
+    showParen (d > 10) $
+      showString "Output " . showsPrec 10 h
   {-# INLINE showsPrec #-}
 
 instance
@@ -198,50 +200,56 @@ type family All c xs where
   All c (x ': xs) = (c x, All c xs)
 
 evalNN ::
-  (RealFloat a, Foldable i, Additive i) =>
+  (RealFloat a, Foldable i, Additive i, Foldable o, Additive o) =>
   NeuralNetwork i ls o a ->
   i a ->
   o a
-evalNN Output !xs = xs
+evalNN (Output l) !xs = evalLayer l xs
 evalNN (l :- net') !xs = evalNN net' $! evalLayer l xs
 
 instance
-  (Functor i, forall x y. (Functor x, Functor y) => Functor (h x y)) =>
+  (Functor i, Functor o, forall x y. (Functor x, Functor y) => Functor (h x y)) =>
   Functor (Network h i ls o)
   where
-  fmap _ Output = Output
+  fmap f (Output h) = Output (fmap f h)
   fmap f (hfka :- net') = fmap f hfka :- fmap f net'
 
 instance
-  (Foldable i, forall x y. (Foldable x, Foldable y) => Foldable (h x y)) =>
+  (Foldable i, Foldable o, forall x y. (Foldable x, Foldable y) => Foldable (h x y)) =>
   Foldable (Network h i ls o)
   where
-  foldMap _ Output = mempty
+  foldMap f (Output h) = foldMap f h
   foldMap f (hfka :- net') = foldMap f hfka <> foldMap f net'
   {-# INLINE foldMap #-}
 
 instance
   {-# OVERLAPPING #-}
-  (Traversable i) =>
+  (Traversable i, Traversable o) =>
   Traversable (Network Layer i ls o)
   where
-  traverse _ Output = pure Output
+  traverse f (Output h) = Output <$> traverse f h
   traverse f (hfka :- net') =
     (:-) <$> traverse f hfka <*> traverse f net'
   {-# INLINE traverse #-}
 
 instance
   {-# OVERLAPPING #-}
-  (Traversable i) =>
+  (Traversable i, Traversable o) =>
   Traversable (Network Gradients i ls o)
   where
-  traverse _ Output = pure Output
+  traverse f (Output h) = Output <$> traverse f h
   traverse f (hfka :- net') =
     (:-) <$> traverse f hfka <*> traverse f net'
   {-# INLINE traverse #-}
 
 mapNetwork ::
-  (Traversable i, Applicative i, Metric i) =>
+  ( Traversable i
+  , Applicative i
+  , Metric i
+  , Traversable o
+  , Applicative o
+  , Metric o
+  ) =>
   ( forall x y.
     ( Traversable x
     , Metric x
@@ -256,26 +264,39 @@ mapNetwork ::
   Network h i ls o a ->
   Network k i ls o b
 {-# INLINE mapNetwork #-}
-mapNetwork _ Output = Output
+mapNetwork f (Output h) = Output $ f h
 mapNetwork f (hfka :- net') = f hfka :- mapNetwork f net'
 
 htraverseNetwork ::
-  (Traversable i, Metric i, Applicative f) =>
+  ( Traversable i
+  , Metric i
+  , Applicative f
+  , Applicative i
+  , Applicative o
+  , Metric o
+  , Traversable o
+  ) =>
   ( forall x y.
-    (Traversable x, Metric x, Metric y, Traversable y) =>
+    (Traversable x, Metric x, Applicative x, Applicative y, Metric y, Traversable y) =>
     h x y a ->
     f (k x y b)
   ) ->
   Network h i ls o a ->
   f (Network k i ls o b)
 {-# INLINE htraverseNetwork #-}
-htraverseNetwork _ Output = pure Output
+htraverseNetwork f (Output h) = Output <$> f h
 htraverseNetwork f (hfka :- net') =
   (:-) <$> f hfka <*> htraverseNetwork f net'
 
 zipNetworkWith ::
   forall h k t i ls o a b c.
-  (Traversable i, Metric i, Applicative i) =>
+  ( Traversable i
+  , Metric i
+  , Applicative i
+  , Traversable o
+  , Metric o
+  , Applicative o
+  ) =>
   ( forall x y.
     ( Traversable x
     , Applicative x
@@ -295,16 +316,28 @@ zipNetworkWith ::
 zipNetworkWith f = go
   where
     go ::
-      (Traversable f', Metric f', Applicative f') =>
+      ( Traversable f'
+      , Metric f'
+      , Applicative f'
+      , Traversable g'
+      , Metric g'
+      , Applicative g'
+      ) =>
       Network h f' ls' g' a ->
       Network k f' ls' g' b ->
       Network t f' ls' g' c
-    go Output Output = Output
+    go (Output h) (Output k) = Output $ f h k
     go (hxy :- hs) (kxy :- ks) = f hxy kxy :- go hs ks
 
 zipNetworkWith3 ::
   forall h k t u i ls o a b c d.
-  (Traversable i, Metric i, Applicative i) =>
+  ( Traversable i
+  , Metric i
+  , Applicative i
+  , Traversable o
+  , Metric o
+  , Applicative o
+  ) =>
   ( forall x y.
     ( Traversable x
     , Applicative x
@@ -326,16 +359,28 @@ zipNetworkWith3 ::
 zipNetworkWith3 f = go
   where
     go ::
-      (Traversable f', Metric f', Applicative f') =>
+      ( Traversable f'
+      , Metric f'
+      , Applicative f'
+      , Traversable g'
+      , Metric g'
+      , Applicative g'
+      ) =>
       Network h f' ls' g' a ->
       Network k f' ls' g' b ->
       Network t f' ls' g' c ->
       Network u f' ls' g' d
-    go Output Output Output = Output
+    go (Output h) (Output k) (Output t) = Output $ f h k t
     go (hxy :- hs) (kxy :- ks) (txy :- ts) = f hxy kxy txy :- go hs ks ts
 
 toGradientStack ::
-  (Traversable i, Applicative i, Metric i) =>
+  ( Traversable i
+  , Applicative i
+  , Metric i
+  , Traversable o
+  , Metric o
+  , Applicative o
+  ) =>
   NeuralNetwork i hs o a ->
   GradientStack i hs o a
 toGradientStack = mapNetwork $ \(Layer k ka _) -> Grads k ka
@@ -353,7 +398,9 @@ pass ::
   , Metric i
   , Traversable i
   , Applicative i
-  , Functor o
+  , Traversable o
+  , Metric o
+  , Applicative o
   , U.Unbox (i a)
   , U.Unbox (o a)
   ) =>
@@ -374,7 +421,15 @@ pass loss dataSet =
       )
 
 trainGD ::
-  (U.Unbox (i a), U.Unbox (o a), Applicative i, Metric i, Traversable i, Functor o) =>
+  ( U.Unbox (i a)
+  , U.Unbox (o a)
+  , Applicative i
+  , Metric i
+  , Traversable i
+  , Traversable o
+  , Metric o
+  , Applicative o
+  ) =>
   RealFloat a =>
   a ->
   Int ->
@@ -400,7 +455,9 @@ trainAdam ::
   , Applicative i
   , Metric i
   , Traversable i
-  , Functor o
+  , Traversable o
+  , Metric o
+  , Applicative o
   , Applicative (WeightStack i hs o)
   ) =>
   RealFloat a =>
@@ -457,13 +514,14 @@ crossEntropy ys' ys =
 instance
   ( forall x y. (Functor x, Functor y) => Functor (h x y)
   , Functor f
-  , g ~ f
+  , Functor g
+  , Applicative (h f g)
   ) =>
   Applicative (Network h f '[] g)
   where
-  pure = const Output
+  pure = Output . pure
   {-# INLINE pure #-}
-  (<*>) = const $ const Output
+  Output fs <*> Output fa = Output $ fs <*> fa
   {-# INLINE (<*>) #-}
 
 instance
@@ -474,6 +532,7 @@ instance
   , Metric k
   , Applicative k
   , Functor i
+  , Functor o
   ) =>
   Applicative (Network h i (k ': ls) o)
   where
@@ -483,7 +542,14 @@ instance
   {-# INLINE (<*>) #-}
 
 generateNetworkA ::
-  (Traversable i, Applicative f, Applicative i, Metric i) =>
+  ( Traversable i
+  , Applicative f
+  , Applicative i
+  , Metric i
+  , Traversable o
+  , Metric o
+  , Applicative o
+  ) =>
   Network (Activation' f) i ls o a ->
   f (Network Layer i ls o a)
 generateNetworkA =
@@ -493,13 +559,16 @@ randomNetwork ::
   forall i ls o g r m.
   ( RandomGenM g r m
   , Traversable i
+  , Traversable o
   , Applicative i
+  , Applicative o
+  , Metric i
+  , Metric o
   ) =>
   g ->
   Network ActivatorProxy i ls o Double ->
   m (NeuralNetwork i ls o Double)
-randomNetwork _ Output = pure Output
-randomNetwork g (HProxy act :- net') = do
+randomNetwork g = htraverseNetwork $ \(HProxy act) -> do
   let s =
         case act of
           ReLU -> sqrt $ recip $ fromIntegral (length $ pure @i ()) / 2.0
@@ -507,4 +576,4 @@ randomNetwork g (HProxy act :- net') = do
 
   Compose ws <- sequence $ pure $ normal 0.0 s g
   bs <- sequence $ pure $ standard g
-  (Layer ws bs act :-) <$> randomNetwork g net'
+  pure $ Layer ws bs act

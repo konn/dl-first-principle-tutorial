@@ -43,6 +43,7 @@ dependencies:
 - massiv
 - matrix
 - massiv-io
+- sized
 - split
 - strict
 - random

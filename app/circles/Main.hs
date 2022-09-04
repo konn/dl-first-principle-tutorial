@@ -162,22 +162,11 @@ savePredictionComparisonImage fp nn (lab0, pts0) (lab1, pts1) =
       & pad 1.1
       & bg green
 
-data SomeNetSeedAux i where
-  BaseNet :: Network ActivatorProxy i '[V1] V1 Double -> SomeNetSeedAux i
-  MkSomeNet ::
-    ( Describable Layer (l ': ls)
-    , Applicative (WeightStack i (l ': ls) V1)
-    ) =>
-    Proxy l ->
-    Proxy ls ->
-    Network ActivatorProxy i (l ': ls) V1 Double ->
-    SomeNetSeedAux i
-
-data SomeNetSeed i where
+data SomeNetSeed i o where
   MkSomeNetSeed ::
-    (Describable Layer ls, Applicative (WeightStack i ls V1)) =>
-    Network ActivatorProxy i ls V1 Double ->
-    SomeNetSeed i
+    (Describable Layer ls, Applicative (WeightStack i ls o)) =>
+    Network ActivatorProxy i ls o Double ->
+    SomeNetSeed i o
 
 withSomeNetwork ::
   NonEmpty Natural ->
@@ -191,21 +180,15 @@ withSomeNetwork layers f = case toSomeNetworkSeed layers of
   MkSomeNetSeed net ->
     f =<< randomNetwork globalStdGen net
 
-toSomeNetworkSeed :: NonEmpty Natural -> SomeNetSeed V2
-toSomeNetworkSeed = fromAux . go . NE.toList
+toSomeNetworkSeed :: NonEmpty Natural -> SomeNetSeed V2 V1
+toSomeNetworkSeed = go . NE.toList
   where
-    fromAux (BaseNet net) = MkSomeNetSeed net
-    fromAux (MkSomeNet _ _ net) = MkSomeNetSeed net
-    go :: Applicative v => [Natural] -> SomeNetSeedAux v
-    go [] = BaseNet $ sigmoidP @V1 :- Output
+    go :: Applicative v => [Natural] -> SomeNetSeed v V1
+    go [] = MkSomeNetSeed $ Output sigmoidP
     go (n : ns) = case someNatVal n of
       SomeNat (_ :: Proxy n) ->
         case go @(V n) ns of
-          BaseNet net ->
-            MkSomeNet Proxy Proxy $ reLUP :- net
-          MkSomeNet (_ :: Proxy l) (_ :: Proxy ls) net ->
-            MkSomeNet (Proxy @(V n)) (Proxy @(l ': ls)) $
-              reLUP @(V n) :- net
+          MkSomeNetSeed net -> MkSomeNetSeed $ reLUP @(V n) :- net
 
 data NetworkDescr = NetworkDescr {hiddenLayers :: !(Sum Int, DList Int), neurons :: !(Sum Int), parameters :: !(Sum Int)}
   deriving (Show, Eq, Ord, Generic)
@@ -213,26 +196,19 @@ data NetworkDescr = NetworkDescr {hiddenLayers :: !(Sum Int, DList Int), neurons
 
 class Describable h ls where
   describe ::
-    (Applicative i, Foldable i) =>
+    (Applicative i, Foldable i, Applicative o, Foldable o, Foldable (h i o)) =>
     Network h i ls o a ->
     NetworkDescr
 
 instance Describable h '[] where
-  describe (Output :: Network h i '[] o a) =
-    mempty {neurons = Sum $ length $ pure @i ()}
-
-instance
-  (forall x y. (Foldable x, Foldable y) => Foldable (h x y)) =>
-  Describable h '[o]
-  where
-  describe (h :- Output) =
+  describe (Output h :: Network h i '[] o a) =
     mempty {parameters = Sum $ length h}
 
 instance
   ( forall x y. (Foldable x, Foldable y) => Foldable (h x y)
-  , Describable h (l' ': ls)
+  , Describable h ls
   ) =>
-  Describable h (l ': l' ': ls)
+  Describable h (l ': ls)
   where
   describe (h :- rest) =
     let numNeuron = length $ pure @l ()
@@ -246,6 +222,9 @@ instance
 putNetworkInfo ::
   ( Applicative i
   , Foldable i
+  , Applicative o
+  , Foldable o
+  , Foldable (h i o)
   , Describable h ls
   ) =>
   Network h i ls o a ->
