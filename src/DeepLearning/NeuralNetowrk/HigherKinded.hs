@@ -16,6 +16,7 @@
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE StandaloneKindSignatures #-}
@@ -28,7 +29,13 @@
 module DeepLearning.NeuralNetowrk.HigherKinded
   ( Layer (..),
     Activation (..),
+    ActivatorProxy,
+    reLUP,
+    sigmoidP,
+    tanhP,
+    idP,
     Activation' (..),
+    HProxy (..),
     reLUA,
     sigmoidA,
     tanhA,
@@ -47,19 +54,26 @@ module DeepLearning.NeuralNetowrk.HigherKinded
     toGradientStack,
     mapNetwork,
     zipNetworkWith,
+    zipNetworkWith3,
     htraverseNetwork,
     crossEntropy,
     generateNetworkA,
-    unitRandom,
+    AdamParams (..),
+    trainAdam,
+    randomNetwork,
   )
 where
 
 import qualified Control.Foldl as L
 import Control.Lens (alaf, foldMapOf)
+import Control.Monad (join)
+import Data.Functor.Compose (Compose (..))
 import Data.Kind (Constraint)
 import Data.List (iterate')
 import Data.Monoid (Sum (..))
 import Data.Reflection (Reifies)
+import Data.Strict (Pair (..))
+import qualified Data.Strict as SP
 import Data.Vector.Generic.Lens (vectorTraverse)
 import qualified Data.Vector.Unboxed as U
 import Generic.Data
@@ -72,6 +86,18 @@ import System.Random.Stateful (Random, RandomGenM, randomRM)
 
 data Activation = ReLU | Sigmoid | Tanh | Id
   deriving (Show, Eq, Ord, Generic, Enum, Bounded)
+
+type ActivatorProxy = HProxy Activation
+
+sigmoidP, reLUP, tanhP, idP :: forall o i a. ActivatorProxy i o a
+sigmoidP = HProxy Sigmoid
+reLUP = HProxy ReLU
+tanhP = HProxy Tanh
+idP = HProxy Id
+
+newtype HProxy p i o a = HProxy {runHProxy :: p}
+  deriving (Show, Eq, Ord, Generic, Functor, Foldable, Traversable, Generic1)
+  deriving (Applicative) via Generically1 (HProxy p i o)
 
 data Activation' m i o a = Activation' {getActivation :: Activation, seed :: m a}
   deriving (Show, Eq, Ord, Generic, Bounded, Functor, Foldable, Traversable)
@@ -275,6 +301,38 @@ zipNetworkWith f = go
     go Output Output = Output
     go (hxy :- hs) (kxy :- ks) = f hxy kxy :- go hs ks
 
+zipNetworkWith3 ::
+  forall h k t u i ls o a b c d.
+  (Traversable i, Metric i, Applicative i) =>
+  ( forall x y.
+    ( Traversable x
+    , Applicative x
+    , Metric x
+    , Traversable y
+    , Applicative y
+    , Metric y
+    ) =>
+    h x y a ->
+    k x y b ->
+    t x y c ->
+    u x y d
+  ) ->
+  Network h i ls o a ->
+  Network k i ls o b ->
+  Network t i ls o c ->
+  Network u i ls o d
+{-# INLINE zipNetworkWith3 #-}
+zipNetworkWith3 f = go
+  where
+    go ::
+      (Traversable f', Metric f', Applicative f') =>
+      Network h f' ls' g' a ->
+      Network k f' ls' g' b ->
+      Network t f' ls' g' c ->
+      Network u f' ls' g' d
+    go Output Output Output = Output
+    go (hxy :- hs) (kxy :- ks) (txy :- ts) = f hxy kxy txy :- go hs ks ts
+
 toGradientStack ::
   (Traversable i, Applicative i, Metric i) =>
   NeuralNetwork i hs o a ->
@@ -331,6 +389,64 @@ trainGD gamma n loss dataSet = last . take n . iterate' step
         net
         (pass loss dataSet net)
 
+data AdamParams a = AdamParams {beta1, beta2, epsilon :: !a}
+  deriving (Show, Eq, Ord, Generic)
+
+trainAdam ::
+  forall i hs o a.
+  ( U.Unbox (i a)
+  , U.Unbox (o a)
+  , Applicative i
+  , Metric i
+  , Traversable i
+  , Functor o
+  , Applicative (WeightStack i hs o)
+  ) =>
+  RealFloat a =>
+  -- | Learning Rate
+  a ->
+  AdamParams a ->
+  Int ->
+  LossFunction o a ->
+  U.Vector (i a, o a) ->
+  NeuralNetwork i hs o a ->
+  NeuralNetwork i hs o a
+trainAdam gamma AdamParams {..} n loss dataSet =
+  SP.fst . last . take n . iterate' step . (:!: (s0 :!: v0))
+  where
+    v0, s0 :: WeightStack i hs o a
+    !v0@s0 = pure 0.0
+    step (net :!: (s :!: v)) =
+      let dW = pass loss dataSet net
+          sN = zipNetworkWith f2 s dW
+          vN = zipNetworkWith f3 v dW
+       in zipNetworkWith3 f net vN sN :!: (sN :!: vN)
+
+    f ::
+      (Additive f, Applicative f, Additive g, Applicative g) =>
+      Layer f g a ->
+      Weights f g a ->
+      Weights f g a ->
+      Layer f g a
+    f (Layer' ws sf) vs ss =
+      Layer' (ws ^-^ ((/) <$> gamma *^ vs <*> fmap (sqrt . (epsilon +)) ss)) sf
+
+    f2 ::
+      (Additive f, Applicative f, Additive g, Applicative g) =>
+      Weights f g a ->
+      Gradients f g a ->
+      Weights f g a
+    f2 sW (Grads' dW) =
+      beta2 *^ sW ^+^ (1 - beta2) *^ (join (*) <$> dW)
+
+    f3 ::
+      (Additive f, Applicative f, Additive g, Applicative g) =>
+      Weights f g a ->
+      Gradients f g a ->
+      Weights f g a
+    f3 vW (Grads' dW) =
+      beta1 *^ vW ^+^ (1 - beta1) *^ dW
+
 crossEntropy :: (Foldable f, Applicative f, Floating a) => LossFunction f a
 crossEntropy ys' ys =
   L.fold (-L.mean) $ l <$> ys' <*> ys
@@ -351,30 +467,19 @@ instance
 
 instance
   ( forall x y. (Functor x, Functor y) => Functor (h x y)
-  , Applicative (Network h k ls g)
-  , Applicative (h f k)
+  , Applicative (Network h k ls o)
+  , Applicative (h i k)
   , Traversable k
   , Metric k
   , Applicative k
-  , Functor f
-  , g ~ f
+  , Functor i
   ) =>
-  Applicative (Network h f (k ': ls) g)
+  Applicative (Network h i (k ': ls) o)
   where
   pure x = pure x :- pure x
   {-# INLINE pure #-}
   (f :- fs) <*> (x :- xs) = (f <*> x) :- (fs <*> xs)
   {-# INLINE (<*>) #-}
-
-{- generteNetworkM ::
-  ( Traversable i
-  , Metric i
-  , Applicative f
-  , Applicative (NeuralNetwork i hs o)
-  ) =>
-  f a ->
-  Network Activation' i hs o a ->
-  f (NeuralNetwork i hs o a) -}
 
 generateNetworkA ::
   (Traversable i, Applicative f, Applicative i, Metric i) =>
@@ -383,7 +488,19 @@ generateNetworkA ::
 generateNetworkA =
   sequenceA . mapNetwork (\(Activation' act val) -> Layer' (pure val) act)
 
-unitRandom :: forall i o g m a r. (Applicative i, Foldable i, RandomGenM g r m, Random a, RealFloat a) => g -> Activation -> Activation' m i o a
-unitRandom g act = Activation' act (randomRM (0, sqrt $ recip $ fromIntegral n) g)
-  where
-    n = length $ pure @i ()
+randomNetwork ::
+  forall i ls o a g r m.
+  ( RandomGenM g r m
+  , Random a
+  , Floating a
+  , Traversable i
+  , Applicative i
+  ) =>
+  g ->
+  Network ActivatorProxy i ls o a ->
+  m (NeuralNetwork i ls o a)
+randomNetwork _ Output = pure Output
+randomNetwork g (HProxy act :- net') = do
+  Compose ws <- sequence $ pure $ randomRM (0, sqrt $ recip $ fromIntegral $ length $ pure @i ()) g
+  bs <- sequence $ pure $ randomRM (0, 1) g
+  (Layer ws bs act :-) <$> randomNetwork g net'

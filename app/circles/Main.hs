@@ -50,7 +50,7 @@ import Numeric.Natural (Natural)
 import qualified Options.Applicative as Opts
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath ((</>))
-import System.Random.Stateful (globalStdGen, randomRIO)
+import System.Random.Stateful (globalStdGen)
 import Text.Printf (printf)
 import Text.Read (readMaybe)
 
@@ -163,48 +163,49 @@ savePredictionComparisonImage fp nn (lab0, pts0) (lab1, pts1) =
       & bg green
 
 data SomeNetSeedAux i where
-  BaseNet :: Network (Activation' IO) i '[V1] V1 Double -> SomeNetSeedAux i
+  BaseNet :: Network ActivatorProxy i '[V1] V1 Double -> SomeNetSeedAux i
   MkSomeNet ::
-    Describable Layer (l ': ls) =>
+    ( Describable Layer (l ': ls)
+    , Applicative (WeightStack i (l ': ls) V1)
+    ) =>
     Proxy l ->
     Proxy ls ->
-    Network (Activation' IO) i (l ': ls) V1 Double ->
+    Network ActivatorProxy i (l ': ls) V1 Double ->
     SomeNetSeedAux i
 
 data SomeNetSeed i where
   MkSomeNetSeed ::
-    Describable Layer ls =>
-    Network (Activation' IO) i ls V1 Double ->
+    (Describable Layer ls, Applicative (WeightStack i ls V1)) =>
+    Network ActivatorProxy i ls V1 Double ->
     SomeNetSeed i
 
 withSomeNetwork ::
   NonEmpty Natural ->
   ( forall ls.
-    Describable Layer ls =>
+    (Describable Layer ls, Applicative (WeightStack V2 ls V1)) =>
     NeuralNetwork V2 ls V1 Double ->
     IO a
   ) ->
   IO a
 withSomeNetwork layers f = case toSomeNetworkSeed layers of
   MkSomeNetSeed net ->
-    f =<< generateNetworkA net
+    f =<< randomNetwork globalStdGen net
 
 toSomeNetworkSeed :: NonEmpty Natural -> SomeNetSeed V2
 toSomeNetworkSeed = fromAux . go . NE.toList
   where
     fromAux (BaseNet net) = MkSomeNetSeed net
     fromAux (MkSomeNet _ _ net) = MkSomeNetSeed net
-    go :: [Natural] -> SomeNetSeedAux v
-    go [] = BaseNet $ Activation' Sigmoid (randomise @V1 Proxy) :- Output
+    go :: Applicative v => [Natural] -> SomeNetSeedAux v
+    go [] = BaseNet $ sigmoidP @V1 :- Output
     go (n : ns) = case someNatVal n of
       SomeNat (_ :: Proxy n) ->
-        let rand = randomise @(V n) Proxy
-         in case go @(V n) ns of
-              BaseNet net ->
-                MkSomeNet Proxy Proxy $ Activation' ReLU rand :- net
-              MkSomeNet (_ :: Proxy l) (_ :: Proxy ls) net ->
-                MkSomeNet (Proxy @(V n)) (Proxy @(l ': ls)) $
-                  Activation' ReLU rand :- net
+        case go @(V n) ns of
+          BaseNet net ->
+            MkSomeNet Proxy Proxy $ reLUP :- net
+          MkSomeNet (_ :: Proxy l) (_ :: Proxy ls) net ->
+            MkSomeNet (Proxy @(V n)) (Proxy @(l ': ls)) $
+              reLUP @(V n) :- net
 
 data NetworkDescr = NetworkDescr {hiddenLayers :: !(Sum Int, DList Int), neurons :: !(Sum Int), parameters :: !(Sum Int)}
   deriving (Show, Eq, Ord, Generic)
@@ -261,27 +262,6 @@ putNetworkInfo net = do
 
 showDim :: Show a => [a] -> String
 showDim = List.intercalate "x" . map show
-
-class
-  (Metric v, Applicative v, Traversable v) =>
-  HasRandomiser v
-  where
-  randomise :: Proxy v -> IO Double
-
-instance KnownNat n => HasRandomiser (V n) where
-  randomise = const $ randomRIO (0, sqrt $ recip $ fromIntegral $ natVal @n Proxy)
-
-instance HasRandomiser V1 where
-  randomise = const $ randomRIO (0, 1.0)
-
-instance HasRandomiser V2 where
-  randomise = const $ randomRIO (0, sqrt $ recip 2.0)
-
-instance HasRandomiser V3 where
-  randomise = const $ randomRIO (0, sqrt $ recip 3.0)
-
-instance HasRandomiser V4 where
-  randomise = const $ randomRIO (0, 0.5)
 
 type Snoc :: [k] -> k -> [k]
 type family Snoc xs x where
@@ -345,5 +325,18 @@ dualSpiralTest Opts {..} = do
           </> printf "predict-gd-%s.png" (showDim $ NE.toList lay)
       )
       netGD
+      ("Train", trainSet)
+      ("Test", testSet)
+
+    netAdam <- evaluate $ trainByAdam gamma AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-8} epochs trainSet net0
+
+    putStrLn $ printf "Training accuracy (Adam): %f" $ predictionAccuracy netAdam trainSet * 100
+    putStrLn $ printf "Validation accuracy (Adam): %f" $ predictionAccuracy netAdam testSet * 100
+
+    savePredictionComparisonImage
+      ( spiralWorkDir
+          </> printf "predict-adam-%s.png" (showDim $ NE.toList lay)
+      )
+      netAdam
       ("Train", trainSet)
       ("Test", testSet)

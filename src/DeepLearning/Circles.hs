@@ -8,6 +8,8 @@
 module DeepLearning.Circles
   ( module DeepLearning.Circles.Types,
     trainByGradientDescent,
+    trainByAdam,
+    AdamParams (..),
     predict,
     predictionAccuracy,
     pixelateScalarField,
@@ -36,6 +38,18 @@ trainByGradientDescent ::
   NeuralNetwork V2 hs V1 Double
 trainByGradientDescent gamma epochs =
   trainGD gamma epochs crossEntropy
+    . U.map \(ClusteredPoint pt clus) -> (pt ^. _Point, realToFrac $ fromEnum clus)
+
+trainByAdam ::
+  (Applicative (WeightStack V2 hs V1)) =>
+  Double ->
+  AdamParams Double ->
+  Int ->
+  U.Vector ClusteredPoint ->
+  NeuralNetwork V2 hs V1 Double ->
+  NeuralNetwork V2 hs V1 Double
+trainByAdam gamma params epochs =
+  trainAdam gamma params epochs crossEntropy
     . U.map \(ClusteredPoint pt clus) -> (pt ^. _Point, realToFrac $ fromEnum clus)
 
 predict :: NeuralNetwork V2 hs V1 Double -> Point V2 Double -> Cluster
