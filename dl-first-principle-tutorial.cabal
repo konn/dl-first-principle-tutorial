@@ -27,7 +27,6 @@ library
   exposed-modules:
       Control.Subcategory.Linear
       Data.Format.SpaceSeparated
-      Data.Learnable
       DeepLearning.Circles
       DeepLearning.Circles.Types
       DeepLearning.Iris
