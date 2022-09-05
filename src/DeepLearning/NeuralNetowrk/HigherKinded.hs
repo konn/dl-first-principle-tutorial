@@ -383,7 +383,7 @@ toGradientStack ::
   ) =>
   NeuralNetwork i hs o a ->
   GradientStack i hs o a
-toGradientStack = mapNetwork $ \(Layer k ka _) -> Grads k ka
+toGradientStack = mapNetwork $ \(Layer' dWB _) -> Grads' dWB
 
 type LossFunction o a =
   forall s.
@@ -556,7 +556,6 @@ generateNetworkA =
   sequenceA . mapNetwork (\(Activation' act val) -> Layer' (pure val) act)
 
 randomNetwork ::
-  forall i ls o g r m.
   ( RandomGenM g r m
   , Traversable i
   , Traversable o
@@ -568,7 +567,7 @@ randomNetwork ::
   g ->
   Network ActivatorProxy i ls o Double ->
   m (NeuralNetwork i ls o Double)
-randomNetwork g = htraverseNetwork $ \(HProxy act) -> do
+randomNetwork g = htraverseNetwork $ \(HProxy act :: ActivatorProxy i o a) -> do
   let s =
         case act of
           ReLU -> sqrt $ recip $ fromIntegral (length $ pure @i ()) / 2.0
