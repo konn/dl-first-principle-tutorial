@@ -1,5 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE ApplicativeDo #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
@@ -25,7 +26,8 @@ import Control.Lens hiding (Snoc)
 import Control.Monad ((<=<))
 import Data.DList (DList)
 import qualified Data.DList as DL
-import Data.Foldable (forM_)
+import Data.Foldable (foldlM, forM_)
+import Data.Functor (void)
 import qualified Data.List as List
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NE
@@ -33,6 +35,7 @@ import Data.List.Split (splitOn)
 import Data.Maybe (fromMaybe)
 import Data.Monoid
 import Data.Proxy (Proxy (..))
+import Data.Strict (Pair (..))
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.Circles
 import DeepLearning.NeuralNetowrk.HigherKinded
@@ -271,6 +274,9 @@ dualCircleTest Opts {..} = do
     putStrLn $ printf "Training accuracy (GD): %f" $ predictionAccuracy net' trainSet * 100
     putStrLn $ printf "Validation accuracy (GD): %f" $ predictionAccuracy net' testSet * 100
 
+adams :: AdamParams Double
+adams = AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-16}
+
 dualSpiralTest :: Opts -> IO ()
 dualSpiralTest Opts {..} = do
   createDirectoryIfMissing True spiralWorkDir
@@ -288,34 +294,52 @@ dualSpiralTest Opts {..} = do
 
   forM_ layers $ \lay -> withSomeNetwork lay $ \net0 -> do
     putNetworkInfo net0
-    netGD <- evaluate $ trainByGradientDescent gamma epochs trainSet net0
-    putStrLn $ printf "Training accuracy (GD): %f" $ predictionAccuracy netGD trainSet * 100
-    putStrLn $ printf "Validation accuracy (GD): %f" $ predictionAccuracy netGD testSet * 100
-
-    savePredictionComparisonImage
-      ( spiralWorkDir
-          </> printf "predict-gd-%s.png" (showDim $ NE.toList lay)
-      )
-      netGD
-      ("Train", trainSet)
-      ("Test", testSet)
-
-    netAdam <-
-      evaluate $
-        trainByAdam
-          gamma
-          AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-16}
-          epochs
-          trainSet
-          net0
-
-    putStrLn $ printf "Training accuracy (Adam): %f" $ predictionAccuracy netAdam trainSet * 100
-    putStrLn $ printf "Validation accuracy (Adam): %f" $ predictionAccuracy netAdam testSet * 100
-
-    savePredictionComparisonImage
-      ( spiralWorkDir
-          </> printf "predict-adam-%s.png" (showDim $ NE.toList lay)
-      )
-      netAdam
-      ("Train", trainSet)
-      ("Test", testSet)
+    let (qs, r) = epochs `quotRem` 10
+        es
+          | qs <= 0 = [epochs]
+          | r == 0 = replicate 10 qs
+          | otherwise = replicate 10 qs ++ [r]
+    void $
+      foldlM
+        ( \(total :!: net) n -> do
+            let !total' = total + n
+            !netGD <- evaluate $ trainByGradientDescent gamma n trainSet net
+            putStrLn $
+              printf "Epoch %d: training accuracy (GD): %f" total'
+                $! predictionAccuracy net trainSet * 100
+            putStrLn $
+              printf "Epoch %d: Validation accuracy (GD): %f" total'
+                $! predictionAccuracy netGD testSet * 100
+            savePredictionComparisonImage
+              ( spiralWorkDir
+                  </> printf "predict-gd-%s-%d.png" (showDim $ NE.toList lay) total'
+              )
+              netGD
+              ("Train", trainSet)
+              ("Test", testSet)
+            pure $ total' :!: netGD
+        )
+        (0 :!: net0)
+        es
+    void $
+      foldlM
+        ( \(total :!: net) n -> do
+            let !total' = total + n
+            !netAdam <- evaluate $ trainByAdam gamma adams n trainSet net
+            putStrLn $
+              printf "Epoch %d: training accuracy (Adam): %f" total'
+                $! predictionAccuracy net trainSet * 100
+            putStrLn $
+              printf "Epoch %d: Validation accuracy (Adam): %f" total'
+                $! predictionAccuracy netAdam testSet * 100
+            savePredictionComparisonImage
+              ( spiralWorkDir
+                  </> printf "predict-adam-%s-%d.png" (showDim $ NE.toList lay) total'
+              )
+              netAdam
+              ("Train", trainSet)
+              ("Test", testSet)
+            pure $ total' :!: netAdam
+        )
+        (0 :!: net0)
+        es
