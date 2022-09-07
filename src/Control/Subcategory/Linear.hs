@@ -9,6 +9,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -24,6 +25,7 @@
 
 module Control.Subcategory.Linear
   ( Vec (),
+    unVec,
     type UVec,
     type Vec1,
     type Vec2,
@@ -49,6 +51,7 @@ module Control.Subcategory.Linear
 
     -- ** Matrix operations
     Mat (),
+    unMat,
     SomeBatch (..),
     splitColAt,
     splitRowAt,
@@ -97,8 +100,10 @@ module Control.Subcategory.Linear
     sumCols',
     replicateMatA,
     generateMatA,
+    generateMat,
     replicateVecA,
     generateVecA,
+    generateVec,
     fromBatchData,
     fromRowMat,
   )
@@ -126,6 +131,7 @@ import qualified Data.Vector.Unboxed.Mutable as MU
 import GHC.Base
 import GHC.Generics hiding (V1)
 import qualified Linear
+import Linear.Affine (Point (..))
 import qualified Linear.V as LinearV
 import Numeric.Backprop
 
@@ -498,6 +504,10 @@ quadranceMat :: (M.FoldNumeric r a) => Mat r n m a -> a
 {-# INLINE quadranceMat #-}
 quadranceMat = coerce $ flip M.powerSumArray 2
 
+deriving newtype instance (HasSize v) => HasSize (Point v)
+
+deriving newtype instance (FromVec v) => FromVec (Point v)
+
 instance KnownNat n => HasSize (Sized U.Vector n) where
   type Size (Sized U.Vector n) = n
   toVec = Vec . M.fromUnboxedVector M.Par . unsized
@@ -515,6 +525,10 @@ type Vec4 = UVec 4
 
 newtype Vec r n a = Vec {runVec :: M.Vector r a}
   deriving (Generic)
+
+{-# INLINE unVec #-}
+unVec :: Vec r n a -> M.Array r M.Ix1 a
+unVec = runVec
 
 type UVec = Vec M.U
 
@@ -538,6 +552,10 @@ type UMat = Mat M.U
 
 newtype Mat r (n :: Nat) (m :: Nat) a = Mat {runMat :: M.Array r M.Ix2 a}
   deriving (Generic, Generic1)
+
+unMat :: Mat r n m a -> M.Array r M.Ix2 a
+{-# INLINE unMat #-}
+unMat = runMat
 
 deriving instance Show (M.Array r M.Ix2 a) => Show (Mat r n m a)
 
@@ -1028,6 +1046,15 @@ generateMatA ::
 generateMatA =
   fmap Mat . M.makeArrayA (M.Sz2 (dimVal @m) (dimVal @n))
 
+generateMat ::
+  forall n m a r.
+  (KnownNat n, KnownNat m, M.Manifest r a, M.Load r M.Ix2 a) =>
+  (M.Ix2 -> a) ->
+  Mat r n m a
+{-# INLINE generateMat #-}
+generateMat =
+  Mat . M.makeArray M.Par (M.Sz2 (dimVal @m) (dimVal @n))
+
 replicateVecA ::
   forall n a r f.
   (KnownNat n, Applicative f, M.Manifest r a) =>
@@ -1045,6 +1072,15 @@ generateVecA ::
 {-# INLINE generateVecA #-}
 generateVecA =
   fmap Vec . M.makeArrayA (M.Sz1 (dimVal @n))
+
+generateVec ::
+  forall n a r.
+  (KnownNat n, M.Manifest r a, M.Load r M.Ix1 a) =>
+  (Int -> a) ->
+  Vec r n a
+{-# INLINE generateVec #-}
+generateVec =
+  Vec . M.makeArray M.Par (M.Sz1 (dimVal @n))
 
 data SomeBatch t a where
   MkSomeBatch :: (KnownNat m) => UMat m (Size t) a -> SomeBatch t a

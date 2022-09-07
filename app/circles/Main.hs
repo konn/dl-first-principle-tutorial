@@ -128,32 +128,32 @@ savePointImage fp pts =
 
 mkPredictionImage ::
   (Dia.N b ~ Double, Dia.V b ~ V2, Dia.Renderable (Dia.Path V2 Double) b) =>
-  (V2 Double -> V1 Double) ->
+  NeuralNetwork 2 ls 1 Double ->
   Vector ClusteredPoint ->
   Diagram b
-mkPredictionImage f pts =
+mkPredictionImage nn pts =
   mconcat
     [ drawClusteredPoints pts & lc black & strokeOpacity 1.0
-    , pixelateScalarField
+    , pixelateCluster
         64
-        (view (_x @V1) . f . view _Point)
         (\α -> blend (min 1.0 $ max 0.0 α) green orange)
         (p2 (-1.25, -1.25))
         (p2 (1.25, 1.25))
+        nn
     ]
 
 savePredictionComparisonImage ::
   FilePath ->
-  (V2 Double -> V1 Double) ->
+  NeuralNetwork 2 ls 1 Double ->
   (String, Vector ClusteredPoint) ->
   (String, Vector ClusteredPoint) ->
   IO ()
-savePredictionComparisonImage fp f (lab0, pts0) (lab1, pts1) =
+savePredictionComparisonImage fp nn (lab0, pts0) (lab1, pts1) =
   renderRasterific fp (mkHeight 256) $
-    ( ( (mkPredictionImage f pts0 & centerXY & alignB)
+    ( ( (mkPredictionImage nn pts0 & centerXY & alignB)
           === (texterific lab0 & scale 0.2 & fc white & centerXY & pad 1.5 & alignT)
       )
-        ||| ( (mkPredictionImage f pts1 & centerXY & alignB)
+        ||| ( (mkPredictionImage nn pts1 & centerXY & alignB)
                 === (texterific lab1 & scale 0.2 & fc white & centerXY & pad 1.1 & alignT)
             )
     )
@@ -189,25 +189,23 @@ dualCircleTest Opts {..} = do
     printf "* Circle isolation, Circle isolation, %d epochs, learning rate = %f" epochs gamma
 
   forM_ layers $ \lay -> withSimpleNetwork (map (,ReLU) $ NE.toList lay) $ \seeds -> do
-    net0 <- randomNetwork globalStdGen seeds
-    f0 <- evaluate $ force $ evalF @V2 @V1 net0
+    !net0 <- randomNetwork globalStdGen seeds
     putNetworkInfo net0
 
-    putStrLn $ printf "Initial training accuracy: %f%%" $ predictionAccuracy f0 trainSet * 100
-    putStrLn $ printf "Initial validation accuracy: %f%%" $ predictionAccuracy f0 testSet * 100
+    putStrLn $ printf "Initial training accuracy: %f%%" $ predictionAccuracy net0 trainSet * 100
+    putStrLn $ printf "Initial validation accuracy: %f%%" $ predictionAccuracy net0 testSet * 100
     !net' <- evaluate $ trainByGradientDescent gamma epochs trainSet net0
-    !f <- evaluate $ force $ evalF @V2 @V1 net'
 
     savePredictionComparisonImage
       ( circleWorkDir
           </> printf "predict-gd-%s.png" (showDim $ NE.toList lay)
       )
-      f
+      net'
       ("Train", trainSet)
       ("Test", testSet)
 
-    putStrLn $ printf "Training accuracy (GD): %f" $ predictionAccuracy f trainSet * 100
-    putStrLn $ printf "Validation accuracy (GD): %f" $ predictionAccuracy f testSet * 100
+    putStrLn $ printf "Training accuracy (GD): %f" $ predictionAccuracy net' trainSet * 100
+    putStrLn $ printf "Validation accuracy (GD): %f" $ predictionAccuracy net' testSet * 100
 
 adams :: AdamParams Double
 adams = AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-16}
@@ -227,71 +225,68 @@ dualSpiralTest Opts {..} = do
   savePointImage (spiralWorkDir </> "train.png") trainSet
   savePointImage (spiralWorkDir </> "test.png") testSet
 
-  forM_ layers $ \lay -> withSimpleNetwork (map (,ReLU) $ NE.toList lay) $ \seeds -> do
-    net0 <- randomNetwork globalStdGen seeds
-    putNetworkInfo net0
+  forM_ layers $ \lay ->
+    withSimpleNetwork (map (,ReLU) $ NE.toList lay) $ \seeds -> do
+      !net0 <- evaluate =<< randomNetwork globalStdGen seeds
+      putNetworkInfo net0
 
-    let (qs, r) = epochs `quotRem` 10
-        es
-          | qs <= 0 = [epochs]
-          | r == 0 = replicate 10 qs
-          | otherwise = replicate 10 qs ++ [r]
-    !f0 <- evaluate $ force $ evalF @V2 @V1 net0
-    putStrLn $
-      printf "Initial: training accuracy: %f%%"
-        $! predictionAccuracy f0 trainSet * 100
-    putStrLn $
-      printf "Initial: Validation accuracy: %f%%"
-        $! predictionAccuracy f0 testSet * 100
+      let (qs, r) = epochs `quotRem` 10
+          es
+            | qs <= 0 = [epochs]
+            | r == 0 = replicate 10 qs
+            | otherwise = replicate 10 qs ++ [r]
+      putStrLn $
+        printf "Initial: training accuracy: %f%%"
+          $! predictionAccuracy net0 trainSet * 100
+      putStrLn $
+        printf "Initial: Validation accuracy: %f%%"
+          $! predictionAccuracy net0 testSet * 100
 
-    savePredictionComparisonImage
-      ( spiralWorkDir
-          </> printf "initial-%s-0.png" (showDim $ NE.toList lay)
-      )
-      f0
-      ("Train", trainSet)
-      ("Test", testSet)
+      () <-
+        savePredictionComparisonImage
+          ( spiralWorkDir
+              </> printf "initial-%s-0.png" (showDim $ NE.toList lay)
+          )
+          net0
+          ("Train", trainSet)
+          ("Test", testSet)
 
-    void $
-      foldlM
-        ( \(total :!: (netGD0 :!: netAdam0)) n -> do
-            let !total' = total + n
-            putStrLn $ printf "*** Epoch %d" total'
-            let !netGD = trainByGradientDescent gamma n trainSet netGD0
-            !fGD <- evaluate $ force $ evalF netGD
-            putStrLn $
-              printf "\t[Gradient Descent] Training accuracy: %f%%"
-                $! predictionAccuracy fGD trainSet * 100
-            putStrLn $
-              printf "\t[Gradient Descent] Validation accuracy: %f%%"
-                $! predictionAccuracy fGD testSet * 100
-            () <-
-              evaluate
-                =<< savePredictionComparisonImage
-                  ( spiralWorkDir
-                      </> printf "predict-gd-%s-%d.png" (showDim $ NE.toList lay) total'
-                  )
-                  fGD
-                  ("Train", trainSet)
-                  ("Test", testSet)
+      void $
+        foldlM
+          ( \(total :!: (netGD0 :!: netAdam0)) n -> do
+              let !total' = total + n
+              putStrLn $ printf "*** Epoch %d" total'
+              !netGD <- evaluate $ trainByGradientDescent gamma n trainSet netGD0
+              putStrLn $
+                printf "[Gradient Descent] Training accuracy: %f%%"
+                  $! predictionAccuracy netGD trainSet * 100
+              putStrLn $
+                printf "[Gradient Descent] Validation accuracy: %f%%"
+                  $! predictionAccuracy netGD testSet * 100
+              savePredictionComparisonImage
+                ( spiralWorkDir
+                    </> printf "predict-gd-%s-%d.png" (showDim $ NE.toList lay) total'
+                )
+                netGD
+                ("Train", trainSet)
+                ("Test", testSet)
+              putStrLn "---"
+              !netAdam <- evaluate $ trainByAdam gamma adams n trainSet netAdam0
+              putStrLn $
+                printf "[Adam] Training accuracy: %f%%"
+                  $! predictionAccuracy netAdam trainSet * 100
+              putStrLn $
+                printf "[Adam] Validation accuracy: %f%%"
+                  $! predictionAccuracy netAdam testSet * 100
+              savePredictionComparisonImage
+                ( spiralWorkDir
+                    </> printf "predict-adam-%s-%d.png" (showDim $ NE.toList lay) total'
+                )
+                netAdam
+                ("Train", trainSet)
+                ("Test", testSet)
 
-            putStrLn "---"
-            let !netAdam = trainByAdam gamma adams n trainSet netAdam0
-            !fAdam <- evaluate $ force $ evalF @V2 @V1 netAdam
-            putStrLn $
-              printf "[Adam] Training accuracy: %f%%"
-                $! predictionAccuracy fAdam trainSet * 100
-            putStrLn $
-              printf "[Adam] Validation accuracy: %f%%"
-                $! predictionAccuracy fAdam testSet * 100
-            savePredictionComparisonImage
-              ( spiralWorkDir
-                  </> printf "predict-adam-%s-%d.png" (showDim $ NE.toList lay) total'
-              )
-              fAdam
-              ("Train", trainSet)
-              ("Test", testSet)
-            pure $ total' :!: (netGD :!: netAdam)
-        )
-        (0 :!: (net0 :!: net0))
-        es
+              pure $ total' :!: (netGD :!: netAdam)
+          )
+          (0 :!: (net0 :!: net0))
+          es
