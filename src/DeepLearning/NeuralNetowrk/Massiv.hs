@@ -216,11 +216,6 @@ someActivation Sigmoid = MkSomeActivation SSigmoid
 someActivation Tanh = MkSomeActivation STanh
 someActivation Id = MkSomeActivation SId
 
-instance Backprop Activation where
-  zero = id
-  one = id
-  add = const
-
 type LayerSpec :: LayerLike
 data LayerSpec l n m a where
   AffP :: a -> LayerSpec 'Aff n m a
@@ -1031,10 +1026,11 @@ crossEntropy ::
   , Backprop k
   , VectorSpace k a
   ) =>
-  LossFunction o m a
+  LossFunction m o a
 crossEntropy ys' ys =
-  sumS (ys * log ys' + (1 - ys) * log (1 - ys'))
-    /. fromIntegral (dimVal @m * dimVal @o)
+  negate $
+    sumS (ys * log ys' + (1 - ys) * log (1 - ys'))
+      /. fromIntegral (dimVal @m)
 
 -- | The variant of 'trainGD' which accepts functorial inputs and outputs.
 trainGDF ::
