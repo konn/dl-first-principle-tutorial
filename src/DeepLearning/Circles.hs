@@ -54,20 +54,20 @@ trainByAdam gamma params epochs =
   trainAdamF gamma params epochs crossEntropy
     . U.map \(ClusteredPoint pt clus) -> (pt ^. _Point, clusterNum clus)
 
-predict :: NeuralNetwork 2 hs 1 Double -> Point V2 Double -> Cluster
-predict net =
-  view _Point >>> evalF net >>> \(V1 p) ->
+predict :: (V2 Double -> V1 Double) -> Point V2 Double -> Cluster
+predict f =
+  view _Point >>> f >>> \(V1 p) ->
     if not $ isNaN p && isInfinite p
       then if p < 0.5 then Cluster0 else Cluster1
       else error "Nan!"
 
 predictionAccuracy ::
-  NeuralNetwork 2 hs 1 Double -> U.Vector ClusteredPoint -> Double
-predictionAccuracy nn =
+  (V2 Double -> V1 Double) -> U.Vector ClusteredPoint -> Double
+predictionAccuracy f =
   L.foldOver vectorTraverse $
     L.premap
       ( \ClusteredPoint {..} ->
-          if predict nn coord == cluster then 1.0 else 0.0
+          if predict f coord == cluster then 1.0 else 0.0
       )
       L.mean
 

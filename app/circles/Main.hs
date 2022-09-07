@@ -128,15 +128,15 @@ savePointImage fp pts =
 
 mkPredictionImage ::
   (Dia.N b ~ Double, Dia.V b ~ V2, Dia.Renderable (Dia.Path V2 Double) b) =>
-  NeuralNetwork 2 ls 1 Double ->
+  (V2 Double -> V1 Double) ->
   Vector ClusteredPoint ->
   Diagram b
-mkPredictionImage nn pts =
+mkPredictionImage f pts =
   mconcat
     [ drawClusteredPoints pts & lc black & strokeOpacity 1.0
     , pixelateScalarField
         64
-        (view (_x @V1) . evalF nn . view _Point)
+        (view (_x @V1) . f . view _Point)
         (\α -> blend (min 1.0 $ max 0.0 α) green orange)
         (p2 (-1.25, -1.25))
         (p2 (1.25, 1.25))
@@ -144,16 +144,16 @@ mkPredictionImage nn pts =
 
 savePredictionComparisonImage ::
   FilePath ->
-  NeuralNetwork 2 ls 1 Double ->
+  (V2 Double -> V1 Double) ->
   (String, Vector ClusteredPoint) ->
   (String, Vector ClusteredPoint) ->
   IO ()
-savePredictionComparisonImage fp nn (lab0, pts0) (lab1, pts1) =
+savePredictionComparisonImage fp f (lab0, pts0) (lab1, pts1) =
   renderRasterific fp (mkHeight 256) $
-    ( ( (mkPredictionImage nn pts0 & centerXY & alignB)
+    ( ( (mkPredictionImage f pts0 & centerXY & alignB)
           === (texterific lab0 & scale 0.2 & fc white & centerXY & pad 1.5 & alignT)
       )
-        ||| ( (mkPredictionImage nn pts1 & centerXY & alignB)
+        ||| ( (mkPredictionImage f pts1 & centerXY & alignB)
                 === (texterific lab1 & scale 0.2 & fc white & centerXY & pad 1.1 & alignT)
             )
     )
@@ -190,22 +190,24 @@ dualCircleTest Opts {..} = do
 
   forM_ layers $ \lay -> withSimpleNetwork (map (,ReLU) $ NE.toList lay) $ \seeds -> do
     net0 <- randomNetwork globalStdGen seeds
+    f0 <- evaluate $ force $ evalF @V2 @V1 net0
     putNetworkInfo net0
 
-    putStrLn $ printf "Initial training accuracy (GD): %f" $ predictionAccuracy net0 trainSet * 100
-    putStrLn $ printf "Initial validation accuracy (GD): %f" $ predictionAccuracy net0 testSet * 100
+    putStrLn $ printf "Initial training accuracy: %f%%" $ predictionAccuracy f0 trainSet * 100
+    putStrLn $ printf "Initial validation accuracy: %f%%" $ predictionAccuracy f0 testSet * 100
     !net' <- evaluate $ trainByGradientDescent gamma epochs trainSet net0
+    !f <- evaluate $ force $ evalF @V2 @V1 net'
 
     savePredictionComparisonImage
       ( circleWorkDir
           </> printf "predict-gd-%s.png" (showDim $ NE.toList lay)
       )
-      net'
+      f
       ("Train", trainSet)
       ("Test", testSet)
 
-    putStrLn $ printf "Training accuracy (GD): %f" $ predictionAccuracy net' trainSet * 100
-    putStrLn $ printf "Validation accuracy (GD): %f" $ predictionAccuracy net' testSet * 100
+    putStrLn $ printf "Training accuracy (GD): %f" $ predictionAccuracy f trainSet * 100
+    putStrLn $ printf "Validation accuracy (GD): %f" $ predictionAccuracy f testSet * 100
 
 adams :: AdamParams Double
 adams = AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-16}
@@ -228,24 +230,25 @@ dualSpiralTest Opts {..} = do
   forM_ layers $ \lay -> withSimpleNetwork (map (,ReLU) $ NE.toList lay) $ \seeds -> do
     net0 <- randomNetwork globalStdGen seeds
     putNetworkInfo net0
+
     let (qs, r) = epochs `quotRem` 10
         es
           | qs <= 0 = [epochs]
           | r == 0 = replicate 10 qs
           | otherwise = replicate 10 qs ++ [r]
-
+    !f0 <- evaluate $ force $ evalF @V2 @V1 net0
     putStrLn $
-      printf "Initial: training accuracy (GD): %f%%"
-        $! predictionAccuracy net0 trainSet * 100
+      printf "Initial: training accuracy: %f%%"
+        $! predictionAccuracy f0 trainSet * 100
     putStrLn $
-      printf "Initial: Validation accuracy (GD): %f%%"
-        $! predictionAccuracy net0 testSet * 100
+      printf "Initial: Validation accuracy: %f%%"
+        $! predictionAccuracy f0 testSet * 100
 
     savePredictionComparisonImage
       ( spiralWorkDir
           </> printf "initial-%s-0.png" (showDim $ NE.toList lay)
       )
-      net0
+      f0
       ("Train", trainSet)
       ("Test", testSet)
 
@@ -253,35 +256,39 @@ dualSpiralTest Opts {..} = do
       foldlM
         ( \(total :!: (netGD0 :!: netAdam0)) n -> do
             let !total' = total + n
-            putStrLn "*** Gradient Discent"
+            putStrLn $ printf "*** Epoch %d" total'
             let !netGD = trainByGradientDescent gamma n trainSet netGD0
+            !fGD <- evaluate $ force $ evalF netGD
             putStrLn $
-              printf "\tEpoch %d: training accuracy (GD): %f%%" total'
-                $! predictionAccuracy netGD trainSet * 100
+              printf "\t[Gradient Descent] Training accuracy: %f%%"
+                $! predictionAccuracy fGD trainSet * 100
             putStrLn $
-              printf "\tEpoch %d: Validation accuracy (GD): %f%%" total'
-                $! predictionAccuracy netGD testSet * 100
-            savePredictionComparisonImage
-              ( spiralWorkDir
-                  </> printf "predict-gd-%s-%d.png" (showDim $ NE.toList lay) total'
-              )
-              netGD
-              ("Train", trainSet)
-              ("Test", testSet)
+              printf "\t[Gradient Descent] Validation accuracy: %f%%"
+                $! predictionAccuracy fGD testSet * 100
+            () <-
+              evaluate
+                =<< savePredictionComparisonImage
+                  ( spiralWorkDir
+                      </> printf "predict-gd-%s-%d.png" (showDim $ NE.toList lay) total'
+                  )
+                  fGD
+                  ("Train", trainSet)
+                  ("Test", testSet)
 
-            putStrLn "*** Adam"
+            putStrLn "---"
             let !netAdam = trainByAdam gamma adams n trainSet netAdam0
+            !fAdam <- evaluate $ force $ evalF @V2 @V1 netAdam
             putStrLn $
-              printf "Epoch %d: training accuracy (Adam): %f" total'
-                $! predictionAccuracy netAdam trainSet * 100
+              printf "[Adam] Training accuracy: %f%%"
+                $! predictionAccuracy fAdam trainSet * 100
             putStrLn $
-              printf "Epoch %d: Validation accuracy (Adam): %f" total'
-                $! predictionAccuracy netAdam testSet * 100
+              printf "[Adam] Validation accuracy: %f%%"
+                $! predictionAccuracy fAdam testSet * 100
             savePredictionComparisonImage
               ( spiralWorkDir
                   </> printf "predict-adam-%s-%d.png" (showDim $ NE.toList lay) total'
               )
-              netAdam
+              fAdam
               ("Train", trainSet)
               ("Test", testSet)
             pure $ total' :!: (netGD :!: netAdam)
