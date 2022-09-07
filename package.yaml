@@ -93,3 +93,4 @@ executables:
     dependencies: 
     - dl-first-principle-tutorial
     - optparse-applicative
+    - time

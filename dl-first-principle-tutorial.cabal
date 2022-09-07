@@ -126,6 +126,7 @@ executable circles
     , strict
     , subcategories
     , these
+    , time
     , type-natural
     , vector
     , vector-th-unbox

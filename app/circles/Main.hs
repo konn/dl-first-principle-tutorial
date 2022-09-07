@@ -35,6 +35,7 @@ import Data.List.Split (splitOn)
 import Data.Maybe (fromMaybe)
 import Data.Monoid (Sum (..))
 import Data.Strict (Pair (..))
+import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.Circles
 import DeepLearning.NeuralNetowrk.Massiv
@@ -56,6 +57,7 @@ import Text.Read (readMaybe)
 
 main :: IO ()
 main = do
+  hSetBuffering stdout LineBuffering
   cmd <- Opts.execParser cmdP
   case cmd of
     Circles opts -> dualCircleTest opts
@@ -213,8 +215,10 @@ adams = AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-16}
 
 dualSpiralTest :: Opts -> IO ()
 dualSpiralTest Opts {..} = do
-  hSetBuffering stdout LineBuffering
-  createDirectoryIfMissing True spiralWorkDir
+  now <- getZonedTime
+  let stamp = formatTime defaultTimeLocale "%Y%m%d-%H%M%S" now
+      workDir = spiralWorkDir </> stamp
+  createDirectoryIfMissing True workDir
   trainSet <- evaluate . force =<< dualSpirals globalStdGen 400 0.05
   testSet <- evaluate . force =<< dualSpirals globalStdGen 200 0.05
   putStrLn ""
@@ -224,13 +228,13 @@ dualSpiralTest Opts {..} = do
       "* Dual spiral classification, %d epochs, learn rate = %f"
       epochs
       gamma
-  savePointImage (spiralWorkDir </> "train.png") trainSet
-  savePointImage (spiralWorkDir </> "test.png") testSet
+  savePointImage (workDir </> "train.png") trainSet
+  savePointImage (workDir </> "test.png") testSet
 
   forM_ layers $ \lay ->
     withSimpleNetwork (map (,ReLU) $ NE.toList lay) $ \seeds -> do
       let dimStr = showDim $ NE.toList lay
-          layDir = spiralWorkDir </> dimStr
+          layDir = workDir </> dimStr
       createDirectoryIfMissing True layDir
       !net0 <- evaluate =<< randomNetwork globalStdGen seeds
       putNetworkInfo net0
