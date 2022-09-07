@@ -25,6 +25,7 @@ import Control.DeepSeq (force)
 import Control.Exception (evaluate)
 import Control.Lens hiding (Snoc)
 import Control.Monad ((<=<))
+import qualified Data.DList as DL
 import Data.Foldable (foldlM, forM_)
 import Data.Functor (void)
 import qualified Data.List as List
@@ -32,6 +33,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NE
 import Data.List.Split (splitOn)
 import Data.Maybe (fromMaybe)
+import Data.Monoid (Sum (..))
 import Data.Strict (Pair (..))
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.Circles
@@ -39,6 +41,7 @@ import DeepLearning.NeuralNetowrk.Massiv
 import Diagrams.Backend.Rasterific
 import Diagrams.Prelude (Diagram, alignB, alignT, bg, black, blend, centerXY, fc, green, lc, mkHeight, orange, p2, pad, scale, strokeOpacity, white, (===), (|||))
 import qualified Diagrams.Prelude as Dia
+import GHC.TypeNats
 import Generic.Data
 import Linear
 import Linear.Affine
@@ -163,11 +166,14 @@ showDim = List.intercalate "x" . map show
 
 putNetworkInfo :: KnownNat i => NeuralNetwork i hs o a -> IO ()
 putNetworkInfo net =
-  let NetworkStat{..} = networkStat net
+  let NetworkStat {..} = networkStat net
       !lays = DL.toList layers
-  in putStrLn $ 
-        printf "** Network of %d layers (%s), %d parameters."
-        (length lays) (show lays) parameters
+   in putStrLn $
+        printf
+          "** Network of %d layers (%s), %d parameters."
+          (length lays)
+          (show lays)
+          (getSum parameters)
 
 dualCircleTest :: Opts -> IO ()
 dualCircleTest Opts {..} = do
@@ -188,7 +194,7 @@ dualCircleTest Opts {..} = do
 
     putStrLn $ printf "Initial training accuracy (GD): %f" $ predictionAccuracy net0 trainSet * 100
     putStrLn $ printf "Initial validation accuracy (GD): %f" $ predictionAccuracy net0 testSet * 100
-    let net' = trainByGradientDescent gamma epochs trainSet net0
+    !net' <- evaluate $ trainByGradientDescent gamma epochs trainSet net0
 
     savePredictionComparisonImage
       ( circleWorkDir
@@ -227,16 +233,33 @@ dualSpiralTest Opts {..} = do
           | qs <= 0 = [epochs]
           | r == 0 = replicate 10 qs
           | otherwise = replicate 10 qs ++ [r]
+
+    putStrLn $
+      printf "Initial: training accuracy (GD): %f%%"
+        $! predictionAccuracy net0 trainSet * 100
+    putStrLn $
+      printf "Initial: Validation accuracy (GD): %f%%"
+        $! predictionAccuracy net0 testSet * 100
+
+    savePredictionComparisonImage
+      ( spiralWorkDir
+          </> printf "initial-%s-0.png" (showDim $ NE.toList lay)
+      )
+      net0
+      ("Train", trainSet)
+      ("Test", testSet)
+
     void $
       foldlM
-        ( \(total :!: net) n -> do
+        ( \(total :!: (netGD0 :!: netAdam0)) n -> do
             let !total' = total + n
-            !netGD <- evaluate $ trainByGradientDescent gamma n trainSet net
+            putStrLn "*** Gradient Discent"
+            let !netGD = trainByGradientDescent gamma n trainSet netGD0
             putStrLn $
-              printf "Epoch %d: training accuracy (GD): %f" total'
-                $! predictionAccuracy net trainSet * 100
+              printf "\tEpoch %d: training accuracy (GD): %f%%" total'
+                $! predictionAccuracy netGD trainSet * 100
             putStrLn $
-              printf "Epoch %d: Validation accuracy (GD): %f" total'
+              printf "\tEpoch %d: Validation accuracy (GD): %f%%" total'
                 $! predictionAccuracy netGD testSet * 100
             savePredictionComparisonImage
               ( spiralWorkDir
@@ -245,18 +268,12 @@ dualSpiralTest Opts {..} = do
               netGD
               ("Train", trainSet)
               ("Test", testSet)
-            pure $ total' :!: netGD
-        )
-        (0 :!: net0)
-        es
-    void $
-      foldlM
-        ( \(total :!: net) n -> do
-            let !total' = total + n
-            !netAdam <- evaluate $ trainByAdam gamma adams n trainSet net
+
+            putStrLn "*** Adam"
+            let !netAdam = trainByAdam gamma adams n trainSet netAdam0
             putStrLn $
               printf "Epoch %d: training accuracy (Adam): %f" total'
-                $! predictionAccuracy net trainSet * 100
+                $! predictionAccuracy netAdam trainSet * 100
             putStrLn $
               printf "Epoch %d: Validation accuracy (Adam): %f" total'
                 $! predictionAccuracy netAdam testSet * 100
@@ -267,7 +284,7 @@ dualSpiralTest Opts {..} = do
               netAdam
               ("Train", trainSet)
               ("Test", testSet)
-            pure $ total' :!: netAdam
+            pure $ total' :!: (netGD :!: netAdam)
         )
-        (0 :!: net0)
+        (0 :!: (net0 :!: net0))
         es
