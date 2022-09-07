@@ -229,6 +229,9 @@ dualSpiralTest Opts {..} = do
 
   forM_ layers $ \lay ->
     withSimpleNetwork (map (,ReLU) $ NE.toList lay) $ \seeds -> do
+      let dimStr = showDim $ NE.toList lay
+          layDir = spiralWorkDir </> dimStr
+      createDirectoryIfMissing True layDir
       !net0 <- evaluate =<< randomNetwork globalStdGen seeds
       putNetworkInfo net0
 
@@ -244,14 +247,11 @@ dualSpiralTest Opts {..} = do
         printf "Initial: Validation accuracy: %f%%"
           $! predictionAccuracy net0 testSet * 100
 
-      () <-
-        savePredictionComparisonImage
-          ( spiralWorkDir
-              </> printf "initial-%s-0.png" (showDim $ NE.toList lay)
-          )
-          net0
-          ("Train", trainSet)
-          ("Test", testSet)
+      savePredictionComparisonImage
+        (layDir </> "initial.png")
+        net0
+        ("Train", trainSet)
+        ("Test", testSet)
 
       void $
         foldlM
@@ -266,9 +266,7 @@ dualSpiralTest Opts {..} = do
                 printf "[Gradient Descent] Validation accuracy: %f%%"
                   $! predictionAccuracy netGD testSet * 100
               savePredictionComparisonImage
-                ( spiralWorkDir
-                    </> printf "predict-gd-%s-%d.png" (showDim $ NE.toList lay) total'
-                )
+                (layDir </> printf "predict-gd-%d.png" total')
                 netGD
                 ("Train", trainSet)
                 ("Test", testSet)
@@ -281,9 +279,7 @@ dualSpiralTest Opts {..} = do
                 printf "[Adam] Validation accuracy: %f%%"
                   $! predictionAccuracy netAdam testSet * 100
               savePredictionComparisonImage
-                ( spiralWorkDir
-                    </> printf "predict-adam-%s-%d.png" (showDim $ NE.toList lay) total'
-                )
+                (layDir </> printf "predict-adam-%d.png" total')
                 netAdam
                 ("Train", trainSet)
                 ("Test", testSet)
