@@ -27,17 +27,19 @@ library
   exposed-modules:
       Control.Subcategory.Linear
       Data.Format.SpaceSeparated
+      Data.Vector.Orphans
       DeepLearning.Circles
       DeepLearning.Circles.Types
       DeepLearning.Iris
       DeepLearning.NeuralNetowrk.HigherKinded
+      DeepLearning.NeuralNetowrk.Massiv
       Numeric.Function.Activation
       Numeric.Optimisation
   other-modules:
       Paths_dl_first_principle_tutorial
   hs-source-dirs:
       src
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -fsimpl-tick-factor=1000
   build-depends:
       ad
     , adjunctions
@@ -54,11 +56,13 @@ library
     , directory
     , distributive
     , dlist
+    , equational-reasoning
     , filepath
     , foldl
     , generic-data
     , generic-lens
     , ghc-typelits-knownnat
+    , ghc-typelits-presburger
     , lens
     , linear
     , massiv
@@ -72,6 +76,7 @@ library
     , strict
     , subcategories
     , these
+    , type-natural
     , vector
     , vector-th-unbox
   default-language: Haskell2010
@@ -82,7 +87,7 @@ executable circles
       Paths_dl_first_principle_tutorial
   hs-source-dirs:
       app/circles
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -O2
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -fsimpl-tick-factor=1000 -O2 -threaded -with-rtsopts=-N
   build-depends:
       ad
     , adjunctions
@@ -100,11 +105,13 @@ executable circles
     , distributive
     , dl-first-principle-tutorial
     , dlist
+    , equational-reasoning
     , filepath
     , foldl
     , generic-data
     , generic-lens
     , ghc-typelits-knownnat
+    , ghc-typelits-presburger
     , lens
     , linear
     , massiv
@@ -119,6 +126,7 @@ executable circles
     , strict
     , subcategories
     , these
+    , type-natural
     , vector
     , vector-th-unbox
   default-language: Haskell2010
@@ -129,7 +137,7 @@ executable iris
       Paths_dl_first_principle_tutorial
   hs-source-dirs:
       app/iris
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -O2
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -fsimpl-tick-factor=1000 -O2
   build-depends:
       ad
     , adjunctions
@@ -147,11 +155,13 @@ executable iris
     , distributive
     , dl-first-principle-tutorial
     , dlist
+    , equational-reasoning
     , filepath
     , foldl
     , generic-data
     , generic-lens
     , ghc-typelits-knownnat
+    , ghc-typelits-presburger
     , lens
     , linear
     , massiv
@@ -166,6 +176,7 @@ executable iris
     , strict
     , subcategories
     , these
+    , type-natural
     , vector
     , vector-th-unbox
   default-language: Haskell2010

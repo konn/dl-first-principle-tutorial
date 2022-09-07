@@ -1,15 +1,15 @@
-{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE MagicHash #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -18,208 +18,521 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE NoStarIsType #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
+{-# OPTIONS_GHC -Wno-redundant-constraints #-}
 {-# OPTIONS_GHC -fplugin GHC.TypeLits.KnownNat.Solver #-}
 
 module Control.Subcategory.Linear
-  ( CAdditive (..),
-    Vec (..),
-    WrapLinear (..),
-    Mat,
+  ( Vec (),
+    type UVec,
+    type Vec1,
+    type Vec2,
+    type Vec3,
+    type Vec4,
+    repeatVec,
+    asColumn,
+    asRow,
+
+    -- ** Vector operations
+    (^+^),
+    (^-^),
+    (*^),
+    (^*),
+    (+^),
+    (^+),
+    (-^),
+    (^-),
+    (^/),
+    (^.^),
+    normVec,
+    quadranceVec,
+
+    -- ** Matrix operations
+    Mat (),
+    SomeBatch (..),
+    splitColAt,
+    splitRowAt,
+    UMat,
+    rowAt,
+    columnAt,
+    duplicateAsRows,
+    duplicateAsCols,
+    repeatMat,
+    (!+!),
+    (!+),
+    (!-!),
+    (!-),
     (!.!),
     (!*!),
+    (!/!),
+    (!^),
     (!*),
-    V1,
-    pattern V1,
-    V2,
-    pattern V2,
-    V3,
-    pattern V3,
-    V4,
-    pattern V4,
-    UMat,
+    (*!),
+    (*!!),
+    (!!*),
+    (!!/),
+    quadranceMat,
+    normMat,
+
+    -- * Conversion between vectors
     HasSize (..),
     GHasSize (),
     FromVec (..),
     genericFromVec,
-    GFromVec (..),
+    genericSinkToVector,
+    GFromVec (),
+    computeV,
+    delayV,
+    computeM,
+    delayM,
+    sumRows,
+    sumCols,
+    dimVal,
+    VectorSpace (..),
+    trans,
+    duplicateAsCols',
+    (!*:),
+    (!*!:),
+    sumRows',
+    sumCols',
+    replicateMatA,
+    generateMatA,
+    replicateVecA,
+    generateVecA,
+    fromBatchData,
+    fromRowMat,
   )
 where
 
-import Control.Applicative (Applicative (..))
-import Control.Lens (alaf, folded, iforMOf_)
-import Control.Lens.Internal.Coerce
-import Control.Monad (join)
+import Control.Monad.ST
 import Control.Subcategory
 import qualified Data.Bifunctor as Bi
+import Data.Coerce
 import Data.Function (on)
-import Data.Kind (Type)
+import Data.Functor.Product (Product)
 import qualified Data.Massiv.Array as M
+import qualified Data.Massiv.Array.Manifest.Vector as VM
 import qualified Data.Massiv.Core.Operations as M
-import Data.Monoid (Sum (..))
-import Data.Proxy (Proxy (..))
-import Data.Sized (Sized, unsafeToSized', unsized)
-import qualified Data.Sized as S
+import Data.Proxy (Proxy)
+import Data.Sized (Sized, unsized)
 import Data.Strict (Pair (..), type (:!:))
 import qualified Data.Strict as St
 import Data.These (These (..))
+import Data.Type.Natural
+import qualified Data.Vector as V
+import qualified Data.Vector.Generic as G
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as MU
+import GHC.Base
 import GHC.Generics hiding (V1)
-import GHC.TypeNats (KnownNat, Nat, natVal, type (*), type (+))
-import Generic.Data
 import qualified Linear
 import qualified Linear.V as LinearV
+import Numeric.Backprop
 
-infixl 6 ^+^, ^-^
+infixl 6 ^+^, ^-^, ^+, +^, ^-, -^
+
+computeV :: (M.Manifest r a) => Vec M.D n a -> Vec r n a
+computeV = coerce M.compute
+
+delayV :: (M.Source r a) => Vec r n a -> Vec M.D n a
+delayV = coerce M.delay
+
+computeM :: (M.Manifest r a) => Mat M.D n m a -> Mat r n m a
+computeM = coerce M.compute
+
+delayM :: (M.Source r a) => Mat r n m a -> Mat M.D n m a
+delayM = coerce M.delay
+
+(^+^) :: (M.Numeric r a) => Vec r n a -> Vec r n a -> Vec r n a
+{-# INLINE (^+^) #-}
+(^+^) = coerce (M.!+!)
+
+(^-^) :: (M.Numeric r a) => Vec r n a -> Vec r n a -> Vec r n a
+{-# INLINE (^-^) #-}
+(^-^) = coerce (M.!-!)
+
+(+^) :: M.Numeric r a => a -> Vec r n a -> Vec r n a
+{-# INLINE (+^) #-}
+(+^) = coerce (M.+.)
+
+(^+) :: M.Numeric r a => Vec r n a -> a -> Vec r n a
+{-# INLINE (^+) #-}
+(^+) = coerce (M..+)
+
+(-^) :: M.Numeric r a => a -> Vec r n a -> Vec r n a
+{-# INLINE (-^) #-}
+(-^) = coerce (M.-.)
+
+(^-) :: M.Numeric r a => Vec r n a -> a -> Vec r n a
+{-# INLINE (^-) #-}
+(^-) = coerce (M..-)
 
 infixl 7 *^, ^*, ^/, ^.^
 
-class (HasSize t, CZip t, CRepeat t, CTraversable t) => CAdditive t where
-  (^+^) :: (Dom t a, Num a) => t a -> t a -> t a
-  {-# INLINE (^+^) #-}
-  (^+^) = czipWith (+)
-  (^-^) :: (Dom t a, Num a) => t a -> t a -> t a
-  {-# INLINE (^-^) #-}
-  (^-^) = czipWith (-)
+(*^) :: M.Numeric r a => a -> Vec r n a -> Vec r n a
+{-# INLINE (*^) #-}
+(*^) = coerce (M.*.)
 
-  (*^) :: (Dom t a, Num a) => a -> t a -> t a
-  {-# INLINE (*^) #-}
-  (*^) = cmap . (*)
+(^*) :: M.Numeric r a => Vec r n a -> a -> Vec r n a
+{-# INLINE (^*) #-}
+(^*) = coerce (M..*)
 
-  (^*) :: (Dom t a, Num a) => t a -> a -> t a
-  {-# INLINE (^*) #-}
-  (^*) = flip $ cmap . flip (*)
+(^/) :: M.NumericFloat r a => Vec r n a -> a -> Vec r n a
+{-# INLINE (^/) #-}
+(^/) = coerce (M../)
 
-  -- | Coordinate-wise multiplication
-  (^.^) :: (Dom t a, Num a) => t a -> t a -> t a
-  {-# INLINE (^.^) #-}
-  (^.^) = czipWith (*)
+-- | Pointwise multiplication
+(^.^) :: (M.Numeric r a) => Vec r n a -> Vec r n a -> Vec r n a
+{-# INLINE (^.^) #-}
+(^.^) = coerce (M.!*!)
 
-  (^/) :: (Dom t a, Fractional a) => t a -> a -> t a
-  {-# INLINE (^/) #-}
-  (^/) = flip $ cmap . flip (/)
+sumRows :: (M.Source r a, Num a) => Mat r n m a -> Vec M.D m a
+sumRows = coerce $ M.foldlWithin M.Dim1 (+) 0
 
-  zero :: (Dom t a, Num a) => t a
+sumCols :: (M.Source r a, Num a) => Mat r n m a -> Vec M.D n a
+sumCols = coerce $ M.foldlWithin M.Dim2 (+) 0
+
+infixl 7 !*!:, !*:
+
+(!*!:) ::
+  ( M.Numeric r a
+  , M.Load r M.Ix2 a
+  , KnownNat l
+  , KnownNat m
+  , KnownNat n
+  , Reifies s W
+  , M.Manifest r a
+  ) =>
+  BVar s (Mat r l m a) ->
+  BVar s (Mat r n l a) ->
+  BVar s (Mat r n m a)
+{-# INLINE (!*!:) #-}
+(!*!:) = liftOp2 $
+  op2 $ \x y ->
+    ( x !*! y
+    , \d ->
+        ( d !*! computeM (trans y)
+        , computeM (trans x) !*! d
+        )
+    )
+
+(!*:) ::
+  ( M.Numeric r a
+  , M.Load r M.Ix2 a
+  , M.Load r M.Ix1 a
+  , KnownNat m
+  , KnownNat n
+  , Reifies s W
+  , M.Manifest r a
+  ) =>
+  BVar s (Mat r n m a) ->
+  BVar s (Vec r n a) ->
+  BVar s (Vec r m a)
+{-# INLINE (!*:) #-}
+(!*:) = liftOp2 $
+  op2 $ \mNM vN ->
+    ( computeV $ mNM !* vN
+    , \dzdy ->
+        ( asColumn dzdy !*! asRow vN
+        , computeV (computeM (trans mNM) !* dzdy)
+        )
+    )
+
+duplicateAsCols' ::
+  forall m r n a s.
+  ( KnownNat m
+  , M.Manifest r a
+  , Reifies s W
+  , KnownNat n
+  , M.Load r M.Ix1 a
+  , M.NumericFloat r a
+  , M.Load r M.Ix2 a
+  ) =>
+  BVar s (Vec r n a) ->
+  BVar s (Mat r m n a)
+{-# INLINE duplicateAsCols' #-}
+duplicateAsCols' = liftOp1 $
+  case sNat @1 %<=? sNat @m of
+    SFalse -> 0.0
+    STrue ->
+      op1 $ \x ->
+        ( computeM $ duplicateAsCols @m @r @n @a x
+        , computeV . columnAt @0
+        )
+
+sumRows' ::
+  ( Reifies s W
+  , M.Source r a
+  , Num a
+  , M.Numeric r a
+  , KnownNat n
+  , KnownNat m
+  , M.Load r M.Ix2 a
+  , M.Manifest r a
+  ) =>
+  BVar s (Mat r n m a) ->
+  BVar s (Vec r m a)
+sumRows' = liftOp1 $
+  op1 $ \mat ->
+    (computeV $ sumRows mat, computeM . duplicateAsCols)
+
+sumCols' ::
+  ( Reifies s W
+  , M.Source r a
+  , Num a
+  , M.Numeric r a
+  , KnownNat n
+  , KnownNat m
+  , M.Load r M.Ix2 a
+  , M.Manifest r a
+  ) =>
+  BVar s (Mat r n m a) ->
+  BVar s (Vec r n a)
+sumCols' = liftOp1 $
+  op1 $ \mat ->
+    (computeV $ sumCols mat, computeM . duplicateAsRows)
+
+{-
+>>> arr = Vec @M.U @3 $ M.fromList M.Par [1,2,3]
+>>> mat = duplicateAsRows @2 arr
+>>> mat
+Mat {runMat = Array D Par (Sz (2 :. 3))
+  [ [ 1.0, 2.0, 3.0 ]
+  , [ 1.0, 2.0, 3.0 ]
+  ]}
+
+>>> sumRows mat
+Vec {runVec = Array D Par (Sz1 2)
+  [ 6.0, 6.0 ]}
+
+>>> sumCols mat
+Vec {runVec = Array D Par (Sz1 3)
+  [ 2.0, 4.0, 6.0 ]}
+
+ -}
+instance (M.Numeric r a, KnownNat n, M.Load r M.Ix1 a) => Backprop (Vec r n a) where
+  zero = const 0
   {-# INLINE zero #-}
-  zero = crepeat 0
-
-  dim :: Proxy t -> Int
-  default dim :: Proxy t -> Int
-  {-# INLINE dim #-}
-  dim = const $ fromIntegral $ natVal @(Size t) Proxy
-
-  norm :: (Dom t a, Floating a) => t a -> a
-  {-# INLINE norm #-}
-  norm = sqrt . quadrance
-
-  quadrance :: (Dom t a, Num a) => t a -> a
-  {-# INLINE quadrance #-}
-  quadrance = alaf Sum cfoldMap (join (*))
-
-newtype WrapLinear (v :: Type -> Type) a = WrapLinear {runWrapLinear :: v a}
-  deriving (Show, Eq, Ord, Generic, Generic1, Functor, Foldable, Traversable)
-  deriving (Applicative) via Generically1 (WrapLinear v)
-  deriving newtype (Linear.Additive)
-
-deriving newtype instance (HasSize v) => HasSize (WrapLinear v)
-
-instance Constrained (WrapLinear v) where
-  type Dom (WrapLinear v) x = ()
-
-instance Applicative v => CPointed (WrapLinear v) where
-  cpure = pure
-  {-# INLINE cpure #-}
-
-instance Functor v => CFunctor (WrapLinear v) where
-  cmap = fmap
-  {-# INLINE cmap #-}
-
-instance Applicative v => CSemialign (WrapLinear v) where
-  calignWith f = liftA2 (fmap f . These)
-  {-# INLINE calignWith #-}
-
-instance Applicative v => CZip (WrapLinear v) where
-  czipWith = liftA2
-  {-# INLINE czipWith #-}
-
-instance Applicative v => CRepeat (WrapLinear v) where
-  crepeat = pure
-  {-# INLINE crepeat #-}
-
-instance Foldable v => CFoldable (WrapLinear v) where
-  cfoldMap = foldMap
-  {-# INLINE cfoldMap #-}
-
-instance Traversable v => CTraversable (WrapLinear v) where
-  ctraverse = traverse
-  {-# INLINE ctraverse #-}
+  one = const 1
+  {-# INLINE one #-}
+  add = (^+^)
+  {-# INLINE add #-}
 
 instance
-  (HasSize v, Applicative v, Linear.Additive v, Traversable v) =>
-  CAdditive (WrapLinear v)
+  (M.Numeric r a, KnownNat n, KnownNat m, M.Load r M.Ix2 a) =>
+  Backprop (Mat r n m a)
   where
-  (^+^) = (Linear.^+^)
-  {-# INLINE (^+^) #-}
-  (^-^) = (Linear.^-^)
-  {-# INLINE (^-^) #-}
-  (^.^) = Linear.liftI2 (*)
-  {-# INLINE (^.^) #-}
-  (^*) = (Linear.^*)
-  {-# INLINE (^*) #-}
-  (*^) = (Linear.*^)
-  {-# INLINE (*^) #-}
-  (^/) = (Linear.^/)
-  {-# INLINE (^/) #-}
-  dim = const $ fromIntegral $ natVal @(Size v) Proxy
-  {-# INLINE dim #-}
+  zero = const 0
+  {-# INLINE zero #-}
+  one = const 1
+  {-# INLINE one #-}
+  add = (!+!)
+  {-# INLINE add #-}
+
+instance CFunctor (Vec r n) where
+  cmap = coerce $ fmap M.computeP . M.map
+  {-# INLINE cmap #-}
+
+instance CSemialign (Vec r n) where
+  calignWith f = coerce $ fmap M.computeP . M.zipWith (fmap f . These)
+  {-# INLINE calignWith #-}
+
+instance CZip (Vec r n) where
+  czipWith = coerce $ fmap (fmap M.computeP) . M.zipWith
+  {-# INLINE czipWith #-}
+
+instance KnownNat n => CRepeat (Vec r n) where
+  crepeat = repeatVec
+  {-# INLINE crepeat #-}
+
+instance KnownNat n => CPointed (Vec r n) where
+  cpure = repeatVec
+  {-# INLINE cpure #-}
+
+repeatVec :: forall n r a. (KnownNat n, M.Load r M.Ix1 a) => a -> Vec r n a
+{-# INLINE repeatVec #-}
+repeatVec = Vec . M.replicate M.Par (M.Sz1 $ dimVal @n)
+
+repeatMat :: forall n m r a. (KnownNat n, KnownNat m, M.Load r M.Ix2 a) => a -> Mat r n m a
+{-# INLINE repeatMat #-}
+repeatMat = Mat . M.replicate M.Par (M.Sz2 (dimVal @m) (dimVal @n))
+
+instance (M.Numeric r a, KnownNat n, M.Load r M.Ix1 a) => Num (Vec r n a) where
+  (+) = (^+^)
+  {-# INLINE (+) #-}
+  (-) = (^-^)
+  {-# INLINE (-) #-}
+  (*) = (^.^)
+  {-# INLINE (*) #-}
+  abs = coerce M.absA
+  {-# INLINE abs #-}
+  signum = coerce M.signumA
+  {-# INLINE signum #-}
+  fromInteger = repeatVec . fromInteger
+  {-# INLINE fromInteger #-}
+  negate = coerce M.negateA
+  {-# INLINE negate #-}
+
+instance
+  (KnownNat n, M.Load r M.Ix1 a, M.NumericFloat r a) =>
+  Fractional (Vec r n a)
+  where
+  recip = coerce M.recipA
+  {-# INLINE recip #-}
+  fromRational = repeatVec . fromRational
+  {-# INLINE fromRational #-}
+  (/) = coerce (M.!/!)
+  {-# INLINE (/) #-}
+
+instance
+  (KnownNat n, M.Load r M.Ix1 a, M.NumericFloat r a, M.Manifest r a) =>
+  Floating (Vec r n a)
+  where
+  pi = repeatVec pi
+  {-# INLINE pi #-}
+  exp = coerce M.expA
+  {-# INLINE exp #-}
+  log = coerce M.logA
+  {-# INLINE log #-}
+  logBase = coerce $ fmap M.computeP . M.logBaseA
+  {-# INLINE logBase #-}
+  sin = coerce M.sinA
+  {-# INLINE sin #-}
+  cos = coerce M.cosA
+  {-# INLINE cos #-}
+  tan = coerce M.tanA
+  {-# INLINE tan #-}
+  asin = coerce M.asinA
+  {-# INLINE asin #-}
+  acos = coerce M.acosA
+  {-# INLINE acos #-}
+  atan = coerce M.atanA
+  {-# INLINE atan #-}
+  sinh = coerce M.sinhA
+  {-# INLINE sinh #-}
+  cosh = coerce M.coshA
+  {-# INLINE cosh #-}
+  tanh = coerce M.tanhA
+  {-# INLINE tanh #-}
+  asinh = coerce M.asinhA
+  {-# INLINE asinh #-}
+  acosh = coerce M.acoshA
+  {-# INLINE acosh #-}
+  atanh = coerce M.atanhA
+  {-# INLINE atanh #-}
+
+instance (M.Numeric r a, KnownNat n, KnownNat m, M.Load r M.Ix2 a) => Num (Mat r n m a) where
+  (+) = (!+!)
+  {-# INLINE (+) #-}
+  (-) = (!-!)
+  {-# INLINE (-) #-}
+  (*) = (!.!)
+  {-# INLINE (*) #-}
+  abs = coerce M.absA
+  {-# INLINE abs #-}
+  signum = coerce M.signumA
+  {-# INLINE signum #-}
+  fromInteger = repeatMat . fromInteger
+  {-# INLINE fromInteger #-}
+  negate = coerce M.negateA
+  {-# INLINE negate #-}
+
+instance (M.NumericFloat r a, KnownNat n, KnownNat m, M.Load r M.Ix2 a) => Fractional (Mat r n m a) where
+  recip = coerce M.recipA
+  {-# INLINE recip #-}
+  fromRational = repeatMat . fromRational
+  {-# INLINE fromRational #-}
+  (/) = coerce (M.!/!)
+  {-# INLINE (/) #-}
+
+instance
+  (KnownNat n, KnownNat m, M.Load r M.Ix2 a, M.NumericFloat r a, M.Manifest r a) =>
+  Floating (Mat r n m a)
+  where
+  pi = repeatMat pi
+  {-# INLINE pi #-}
+  exp = coerce M.expA
+  {-# INLINE exp #-}
+  log = coerce M.logA
+  {-# INLINE log #-}
+  logBase = coerce $ fmap M.computeP . M.logBaseA
+  {-# INLINE logBase #-}
+  sin = coerce M.sinA
+  {-# INLINE sin #-}
+  cos = coerce M.cosA
+  {-# INLINE cos #-}
+  tan = coerce M.tanA
+  {-# INLINE tan #-}
+  asin = coerce M.asinA
+  {-# INLINE asin #-}
+  acos = coerce M.acosA
+  {-# INLINE acos #-}
+  atan = coerce M.atanA
+  {-# INLINE atan #-}
+  sinh = coerce M.sinhA
+  {-# INLINE sinh #-}
+  cosh = coerce M.coshA
+  {-# INLINE cosh #-}
+  tanh = coerce M.tanhA
+  {-# INLINE tanh #-}
+  asinh = coerce M.asinhA
+  {-# INLINE asinh #-}
+  acosh = coerce M.acoshA
+  {-# INLINE acosh #-}
+  atanh = coerce M.atanhA
+  {-# INLINE atanh #-}
+
+normVec :: (M.FoldNumeric r a, M.Source r a, Floating a) => Vec r n a -> a
+{-# INLINE normVec #-}
+normVec = coerce M.normL2
+
+quadranceVec :: (M.FoldNumeric r a) => Vec r n a -> a
+{-# INLINE quadranceVec #-}
+quadranceVec = coerce $ flip M.powerSumArray 2
+
+normMat :: (M.FoldNumeric r a, M.Source r a, Floating a) => Mat r n m a -> a
+{-# INLINE normMat #-}
+normMat = coerce M.normL2
+
+quadranceMat :: (M.FoldNumeric r a) => Mat r n m a -> a
+{-# INLINE quadranceMat #-}
+quadranceMat = coerce $ flip M.powerSumArray 2
 
 instance KnownNat n => HasSize (Sized U.Vector n) where
   type Size (Sized U.Vector n) = n
-  toVec = Vec
+  toVec = Vec . M.fromUnboxedVector M.Par . unsized
   {-# INLINE toVec #-}
+  sinkToVector mv = U.copy mv . unsized
+  {-# INLINE sinkToVector #-}
 
-instance (KnownNat n) => CAdditive (Sized U.Vector n) where
-  dim = const $ fromIntegral $ natVal @n Proxy
-  {-# INLINE dim #-}
+type Vec1 = UVec 1
 
-type V1 = Vec 1
+type Vec2 = UVec 2
 
-{-# COMPLETE V1 #-}
+type Vec3 = UVec 3
 
-pattern V1 :: U.Unbox a => a -> V1 a
-pattern V1 a = (Vec (a S.:< S.Nil))
+type Vec4 = UVec 4
 
-{-# COMPLETE V2 #-}
+newtype Vec r n a = Vec {runVec :: M.Vector r a}
+  deriving (Generic)
 
-type V2 = Vec 2
+type UVec = Vec M.U
 
-pattern V2 :: U.Unbox a => a -> a -> V2 a
-pattern V2 a b = Vec (a S.:< b S.:< S.Nil)
+instance Constrained (Vec r n) where
+  type
+    Dom (Vec r n) a =
+      ( M.Load r M.Ix1 a
+      , M.FoldNumeric r a
+      , M.NumericFloat r a
+      , M.Manifest r a
+      )
 
-type V3 = Vec 3
-
-pattern V3 :: U.Unbox a => a -> a -> a -> V3 a
-pattern V3 a b c = Vec (a S.:< b S.:< c S.:< S.Nil)
-
-type V4 = Vec 4
-
-pattern V4 :: U.Unbox a => a -> a -> a -> a -> V4 a
-pattern V4 a b c d = Vec (a S.:< b S.:< c S.:< d S.:< S.Nil)
-
-newtype Vec n a = Vec {getVec :: Sized U.Vector n a}
-  deriving newtype (CFunctor, CSemialign, CPointed, CZip, CRepeat, CFoldable)
-
-instance CTraversable (Vec n) where
-  ctraverse f (Vec a) = Vec <$> ctraverse f a
-  {-# INLINE ctraverse #-}
-
-instance Constrained (Vec n) where
-  type Dom (Vec n) a = U.Unbox a
-
-instance KnownNat n => HasSize (Vec n) where
-  type Size (Vec n) = n
+instance KnownNat n => HasSize (Vec M.U n) where
+  type Size (Vec M.U n) = n
   toVec = id
   {-# INLINE toVec #-}
+  sinkToVector mv = U.copy mv . M.toUnboxedVector . runVec
+  {-# INLINE sinkToVector #-}
 
 type UMat = Mat M.U
 
@@ -227,6 +540,8 @@ newtype Mat r (n :: Nat) (m :: Nat) a = Mat {runMat :: M.Array r M.Ix2 a}
   deriving (Generic, Generic1)
 
 deriving instance Show (M.Array r M.Ix2 a) => Show (Mat r n m a)
+
+deriving instance Show (M.Array r M.Ix1 a) => Show (Vec r n a)
 
 instance Constrained (Mat r n m) where
   type Dom (Mat r n m) a = (M.Load r M.Ix2 a, M.FoldNumeric r a, M.NumericFloat r a, M.Manifest r a)
@@ -236,7 +551,7 @@ instance CFunctor (Mat r n m) where
   {-# INLINE cmap #-}
 
 instance (KnownNat n, KnownNat m) => CPointed (Mat r n m) where
-  cpure = Mat . M.replicate M.Par (M.Sz2 (fromIntegral $ natVal $ Proxy @m) (fromIntegral $ natVal $ Proxy @n))
+  cpure = Mat . M.replicate M.Par (M.Sz2 (dimVal @m) (dimVal @n))
   {-# INLINE cpure #-}
 
 instance (KnownNat n, KnownNat m) => CSemialign (Mat r n m) where
@@ -258,68 +573,96 @@ instance (KnownNat n, KnownNat m) => CRepeat (Mat r n m) where
 instance (KnownNat n, KnownNat m) => CFoldable (Mat r n m) where
   cfoldMap f = M.foldMono f . runMat
   {-# INLINE cfoldMap #-}
-  clength = const $ fromIntegral $ natVal @n Proxy * natVal @m Proxy
+  clength = const $ dimVal @m * dimVal @n
   {-# INLINE clength #-}
 
 instance (KnownNat n, KnownNat m) => CTraversable (Mat r n m) where
   ctraverse f = fmap Mat . M.traverseA f . runMat
   {-# INLINE ctraverse #-}
 
-instance (KnownNat n, KnownNat m) => HasSize (UMat n m) where
-  type Size (UMat n m) = n * m
-  toVec = Vec . unsafeToSized' . M.toUnboxedVector . runMat
-  {-# INLINE toVec #-}
+infixl 6 !+!, !-!, !+, !-
 
-instance (KnownNat n, KnownNat m) => CAdditive (UMat n m) where
-  (^+^) = fmap Mat . ((M.!+!) `on` runMat)
-  {-# INLINE (^+^) #-}
-  (^-^) = fmap Mat . ((M.!+!) `on` runMat)
-  {-# INLINE (^-^) #-}
-  (*^) =
-    coerce $ (M.*.) @M.Ix2 @M.U @a ::
-      forall a. Dom (UMat n m) a => a -> UMat n m a -> UMat n m a
-  {-# INLINE (*^) #-}
-  (^*) =
-    coerce $ (M..*) @M.Ix2 @M.U @a ::
-      forall a. Dom (UMat n m) a => UMat n m a -> a -> UMat n m a
-  {-# INLINE (^*) #-}
-  (^/) =
-    coerce $ (M../) @M.Ix2 @M.U @a ::
-      forall a. Dom (UMat n m) a => UMat n m a -> a -> UMat n m a
-  {-# INLINE (^/) #-}
-  (^.^) = (!.!)
-  {-# INLINE (^.^) #-}
-  dim = const $ fromIntegral (natVal @n Proxy) * fromIntegral (natVal @m Proxy)
-  {-# INLINE dim #-}
+infixl 7 *!!, !!*, !*!, !.!, !!/, !/!, !*, *!
 
-  norm = coerce M.normL2
-  {-# INLINE norm #-}
-  quadrance = coerce $ flip M.powerSumArray 2
-  {-# INLINE quadrance #-}
+infix 7 >.<
+
+infixr 8 !^
+
+(!+!) :: forall n m r a. M.Numeric r a => Mat r n m a -> Mat r n m a -> Mat r n m a
+{-# INLINE (!+!) #-}
+(!+!) = coerce (M.!+!)
+
+(!-!) :: forall n m r a. M.Numeric r a => Mat r n m a -> Mat r n m a -> Mat r n m a
+{-# INLINE (!-!) #-}
+(!-!) = coerce (M.!-!)
+
+(!+) :: forall n m r a. M.Numeric r a => Mat r n m a -> a -> Mat r n m a
+{-# INLINE (!+) #-}
+(!+) = coerce (M..+)
+
+(!-) :: forall n m r a. M.Numeric r a => Mat r n m a -> a -> Mat r n m a
+{-# INLINE (!-) #-}
+(!-) = coerce (M..-)
+
+(*!!) :: M.Numeric r a => a -> Mat r n m a -> Mat r n ma a
+{-# INLINE (*!!) #-}
+(*!!) = coerce (M.*.)
+
+(!!*) :: M.Numeric r a => Mat r n m a -> a -> Mat r n ma a
+{-# INLINE (!!*) #-}
+(!!*) = coerce (M..*)
+
+(!!/) :: M.NumericFloat r a => Mat r n m a -> a -> Mat r n ma a
+{-# INLINE (!!/) #-}
+(!!/) = coerce (M../)
 
 -- | Matrix multiplication
 (!*!) ::
   forall r n l m a.
   (M.Manifest r a, M.Numeric r a) =>
+  Mat r l m a ->
+  Mat r n l a ->
+  Mat r n m a
+{-# INLINE (!*!) #-}
+(!*!) = coerce (M.!><!)
+
+(!/!) ::
+  forall r n l m a.
+  (M.NumericFloat r a) =>
   Mat r n l a ->
   Mat r l m a ->
   Mat r n m a
-(!*!) = coerce $ (M.!><!) @r @a
+{-# INLINE (!/!) #-}
+(!/!) = coerce (M.!/!)
+
+(!^) ::
+  forall r n l a.
+  (M.Numeric r a) =>
+  Mat r n l a ->
+  Int ->
+  Mat r n l a
+{-# INLINE (!^) #-}
+(!^) = coerce M.powerPointwise
 
 -- | Matrix-vector multiplication
 (!*) ::
-  forall n l a.
-  (KnownNat l, U.Unbox a, Num a) =>
-  Mat M.U n l a ->
-  Vec n a ->
-  Vec l a
-Mat m !* v =
-  let v' :: M.Vector M.U a
-      !v' = M.fromUnboxedVector M.Par $ unsized $ getVec v
-   in Vec $
-        unsafeToSized' $
-          M.toUnboxedVector $
-            M.computeP $ m M.!>< v'
+  forall r n l a.
+  (M.Source r a, M.Numeric r a) =>
+  Mat r n l a ->
+  Vec r n a ->
+  Vec M.D l a
+{-# INLINE (!*) #-}
+(!*) = coerce (M.!><)
+
+-- | Row vector-matrix multiplication
+(*!) ::
+  forall r n m a.
+  (M.Manifest r a, M.Numeric r a) =>
+  Vec r n a ->
+  Mat r n m a ->
+  Vec r m a
+{-# INLINE (*!) #-}
+(*!) = coerce (M.><!)
 
 -- | Pointwise matrix-matrix mutlipliation
 (!.!) ::
@@ -328,50 +671,113 @@ Mat m !* v =
   Mat r n m a ->
   Mat r n m a ->
   Mat r n m a
-(!.!) = coerce $ (M.!*!) @M.Ix2 @r @a
+{-# INLINE (!.!) #-}
+(!.!) = coerce (M.!*!)
 
 class (KnownNat (Size f)) => HasSize (f :: Type -> Type) where
   type Size f :: Nat
   type Size f = GSize (Rep1 f)
-  toVec :: U.Unbox a => f a -> Vec (Size f) a
-  default toVec :: (Foldable f, U.Unbox a) => f a -> Vec (Size f) a
+  toVec :: U.Unbox a => f a -> Vec M.U (Size f) a
   {-# INLINE toVec #-}
   toVec xs = Vec $
-    unsafeToSized' $
+    M.fromUnboxedVector M.Par $
       U.create $ do
-        mv <- MU.new $ fromIntegral $ natVal @(Size f) Proxy
-        iforMOf_ folded xs $ MU.write mv
+        mv <- MU.new $ dimVal @(Size f)
+        sinkToVector mv xs
         pure mv
 
+  sinkToVector :: U.Unbox a => U.MVector s a -> f a -> ST s ()
+  default sinkToVector :: (Generic1 f, GHasSize (Rep1 f), U.Unbox a) => U.MVector s a -> f a -> ST s ()
+  {-# INLINE sinkToVector #-}
+  sinkToVector = genericSinkToVector
+
+-- {-# INLINE sinkToVector #-}
+-- sinkToVector =
+
+deriving anyclass instance
+  (HasSize f, HasSize g) =>
+  HasSize (Product f g)
+
+deriving anyclass instance
+  (FromVec f, FromVec g) =>
+  FromVec (Product f g)
+
 class HasSize f => FromVec f where
-  fromVec :: U.Unbox a => Vec (Size f) a -> f a
+  fromVec :: U.Unbox a => Vec M.U (Size f) a -> f a
   default fromVec ::
     (Generic1 f, GFromVec (Rep1 f)) =>
     U.Unbox a =>
-    Vec (Size f) a ->
+    Vec M.U (Size f) a ->
     f a
   {-# INLINE fromVec #-}
   fromVec = genericFromVec
+  decodeFrom :: U.Unbox a => U.Vector a -> f a :!: U.Vector a
+  default decodeFrom ::
+    (Generic1 f, GFromVec (Rep1 f)) =>
+    U.Unbox a =>
+    U.Vector a ->
+    f a :!: U.Vector a
+  {-# INLINE decodeFrom #-}
+  decodeFrom = genericDecodeFrom
 
-genericFromVec :: (Generic1 f, GFromVec (Rep1 f)) => U.Unbox a => Vec (Size f) a -> f a
+deriving anyclass instance FromVec Linear.V1
+
+deriving anyclass instance FromVec Linear.V2
+
+deriving anyclass instance FromVec Linear.V3
+
+deriving anyclass instance FromVec Linear.V4
+
+duplicateAsRows :: forall m r n a. (KnownNat m, M.Manifest r a) => Vec r n a -> Mat M.D n m a
+duplicateAsRows = Mat . M.expandWithin M.Dim2 (M.Sz1 $ dimVal @m) const . runVec
+
+duplicateAsCols :: forall m r n a. (KnownNat m, M.Manifest r a) => Vec r n a -> Mat M.D m n a
+duplicateAsCols = Mat . M.expandWithin M.Dim1 (M.Sz1 $ dimVal @m) const . runVec
+
+genericFromVec :: (Generic1 f, GFromVec (Rep1 f), U.Unbox a) => Vec M.U (Size f) a -> f a
 {-# INLINE genericFromVec #-}
-genericFromVec = to1 . St.fst . gDecodeFrom . unsized . getVec
+genericFromVec = to1 . St.fst . gDecodeFrom . M.toUnboxedVector . runVec
+
+genericDecodeFrom :: (Generic1 f, GFromVec (Rep1 f), U.Unbox a) => U.Vector a -> f a :!: U.Vector a
+{-# INLINE genericDecodeFrom #-}
+genericDecodeFrom = Bi.first to1 . gDecodeFrom
+
+genericSinkToVector :: (Generic1 f, GHasSize (Rep1 f), U.Unbox a) => U.MVector s a -> f a -> ST s ()
+{-# INLINE genericSinkToVector #-}
+genericSinkToVector mv = gsinkToVector mv . from1
 
 class (KnownNat (GSize f)) => GHasSize f where
   type GSize f :: Nat
+  gsinkToVector :: U.Unbox a => U.MVector s a -> f a -> ST s ()
 
 class GHasSize f => GFromVec f where
   gDecodeFrom :: U.Unbox a => U.Vector a -> f a :!: U.Vector a
 
 instance GHasSize f => GHasSize (M1 i c f) where
   type GSize (M1 i c f) = GSize f
+  gsinkToVector mv = gsinkToVector mv . unM1
+  {-# INLINE gsinkToVector #-}
 
 instance GFromVec f => GFromVec (M1 i c f) where
   gDecodeFrom = coerce $ gDecodeFrom @f
   {-# INLINE gDecodeFrom #-}
 
+instance HasSize f => GHasSize (Rec1 f) where
+  type GSize (Rec1 f) = Size f
+  gsinkToVector mv = sinkToVector mv . unRec1
+  {-# INLINE gsinkToVector #-}
+
+instance FromVec f => GFromVec (Rec1 f) where
+  gDecodeFrom = Bi.first Rec1 . decodeFrom
+  {-# INLINE gDecodeFrom #-}
+
 instance (GHasSize f, GHasSize g) => GHasSize (f :*: g) where
   type GSize (f :*: g) = GSize f + GSize g
+  gsinkToVector mv (f :*: g) = do
+    let (lh, rh) = MU.splitAt (dimVal @(GSize f)) mv
+    gsinkToVector lh f
+    gsinkToVector rh g
+  {-# INLINE gsinkToVector #-}
 
 instance (GFromVec f, GFromVec g) => GFromVec (f :*: g) where
   gDecodeFrom xs =
@@ -382,6 +788,8 @@ instance (GFromVec f, GFromVec g) => GFromVec (f :*: g) where
 
 instance GHasSize Par1 where
   type GSize Par1 = 1
+  gsinkToVector mv = MU.write mv 0 . unPar1
+  {-# INLINE gsinkToVector #-}
 
 instance GFromVec Par1 where
   gDecodeFrom =
@@ -391,9 +799,13 @@ instance GFromVec Par1 where
 
 instance GHasSize (K1 i c) where
   type GSize (K1 i c) = 0
+  gsinkToVector = mempty
+  {-# INLINE gsinkToVector #-}
 
 instance GHasSize U1 where
   type GSize U1 = 0
+  gsinkToVector = mempty
+  {-# INLINE gsinkToVector #-}
 
 instance GFromVec U1 where
   gDecodeFrom = (U1 :!:)
@@ -413,5 +825,309 @@ deriving anyclass instance HasSize Linear.V4
 
 instance KnownNat n => HasSize (LinearV.V n) where
   type Size (LinearV.V n) = n
-  toVec = Vec . unsafeToSized' . U.convert . LinearV.toVector
+  toVec = Vec . VM.fromVector' M.Par (M.Sz1 $ dimVal @n) . LinearV.toVector
   {-# INLINE toVec #-}
+  sinkToVector mv (LinearV.V vec) = do
+    U.copy mv $ G.convert vec
+
+dimVal :: forall n. KnownNat n => Int
+dimVal = fromIntegral $ natVal' @n proxy#
+
+rowAt ::
+  forall i m n r a.
+  ( KnownNat i
+  , i + 1 <= m
+  , KnownNat n
+  , M.Source r a
+  ) =>
+  Mat r n m a ->
+  Vec M.D n a
+{-# INLINE rowAt #-}
+rowAt =
+  Vec
+    . M.resize' (M.Sz1 $ dimVal @n)
+    . M.extract' (dimVal @i M.:. 0) (M.Sz2 1 $ dimVal @n)
+    . runMat
+
+columnAt ::
+  forall i m n r a.
+  ( KnownNat i
+  , i + 1 <= n
+  , KnownNat m
+  , M.Source r a
+  ) =>
+  Mat r n m a ->
+  Vec M.D m a
+{-# INLINE columnAt #-}
+columnAt =
+  Vec
+    . M.resize' (M.Sz1 $ dimVal @m)
+    . M.extract' (0 M.:. dimVal @i) (M.Sz2 (dimVal @m) 1)
+    . runMat
+
+asColumn :: forall r n a. (M.Size r, KnownNat n) => Vec r n a -> Mat r 1 n a
+{-# INLINE asColumn #-}
+asColumn = coerce $ M.resize' (M.Sz2 (dimVal @n) 1)
+
+asRow :: forall r n a. (M.Size r, KnownNat n) => Vec r n a -> Mat r n 1 a
+{-# INLINE asRow #-}
+asRow = coerce $ M.resize' (M.Sz2 1 (dimVal @n))
+
+infixl 6 .+, +., .-, -.
+
+infixr 7 .*
+
+infixl 7 /., *.
+
+instance VectorSpace Double Double where
+  reps = id
+  {-# INLINE reps #-}
+  (.*) = (*)
+  {-# INLINE (.*) #-}
+  (+.) = (+)
+  {-# INLINE (+.) #-}
+  (.+) = (+)
+  {-# INLINE (.+) #-}
+  (-.) = (-)
+  {-# INLINE (-.) #-}
+  (.-) = (-)
+  {-# INLINE (.-) #-}
+  (*.) = (*)
+  {-# INLINE (*.) #-}
+  (/.) = (/)
+  {-# INLINE (/.) #-}
+  (>.<) = (*)
+  {-# INLINE (>.<) #-}
+  sumS = id
+  {-# INLINE sumS #-}
+
+class Floating k => VectorSpace k v | v -> k where
+  reps :: k -> v
+  (.*) :: k -> v -> v
+  (+.) :: v -> k -> v
+  (.+) :: k -> v -> v
+  (-.) :: v -> k -> v
+  (.-) :: k -> v -> v
+  (*.) :: v -> k -> v
+  (/.) :: v -> k -> v
+
+  -- | Dot-product
+  (>.<) :: v -> v -> k
+
+  sumS :: v -> k
+
+instance
+  (M.NumericFloat r a, KnownNat n, M.Manifest r a, M.Load r M.Ix1 a) =>
+  VectorSpace a (Vec r n a)
+  where
+  reps = cpure
+  {-# INLINE reps #-}
+  (.+) = (+^)
+  {-# INLINE (.+) #-}
+  (+.) = (^+)
+  {-# INLINE (+.) #-}
+  (.-) = (-^)
+  {-# INLINE (.-) #-}
+  (-.) = (^-)
+  {-# INLINE (-.) #-}
+  (.*) = (*^)
+  {-# INLINE (.*) #-}
+  (*.) = (^*)
+  {-# INLINE (*.) #-}
+  (/.) = (^/)
+  {-# INLINE (/.) #-}
+
+  (>.<) = coerce (M.!.!)
+  {-# INLINE (>.<) #-}
+
+  sumS = coerce M.sum
+  {-# INLINE sumS #-}
+
+instance
+  (M.NumericFloat r a, KnownNat n, KnownNat m, M.Manifest r a, M.Load r M.Ix2 a) =>
+  VectorSpace a (Mat r n m a)
+  where
+  reps = cpure
+  {-# INLINE reps #-}
+  (.+) = coerce (M.+.)
+  {-# INLINE (.+) #-}
+  (+.) = coerce (M..+)
+  {-# INLINE (+.) #-}
+  (.-) = coerce (M.-.)
+  {-# INLINE (.-) #-}
+  (-.) = coerce (M..-)
+  {-# INLINE (-.) #-}
+  (.*) = (*!!)
+  {-# INLINE (.*) #-}
+  (*.) = (!!*)
+  {-# INLINE (*.) #-}
+  (/.) = (!!/)
+  {-# INLINE (/.) #-}
+  sumS = coerce M.sum
+  {-# INLINE sumS #-}
+  (>.<) = coerce ((M.!.!) `on` M.resize' (M.Sz1 $ dimVal @n * dimVal @m))
+  {-# INLINE (>.<) #-}
+
+trans :: M.Source r a => Mat r n m a -> Mat M.D m n a
+{-# INLINE trans #-}
+trans = coerce M.transpose
+
+instance
+  (Reifies s W, Floating a, Backprop k, Backprop a, VectorSpace k a) =>
+  VectorSpace (BVar s k) (BVar s a)
+  where
+  {-# INLINE reps #-}
+  reps = liftOp1 $
+    op1 $ \x -> (reps x, const 0)
+  {-# INLINE (.*) #-}
+  (.*) = liftOp2 $
+    op2 $ \c v ->
+      (c .* v, \dz -> (dz >.< v, c .* dz))
+  {-# INLINE (*.) #-}
+  (*.) = flip (.*)
+  {-# INLINE (.+) #-}
+  (.+) = liftOp2 $
+    op2 $ \c v ->
+      (c .+ v, \dz -> (sumS dz, dz))
+  {-# INLINE (+.) #-}
+  (+.) = flip (.+)
+  {-# INLINE (.-) #-}
+  (.-) = liftOp2 $
+    op2 $ \c v ->
+      (c .- v, \dz -> (sumS dz, -dz))
+  {-# INLINE (-.) #-}
+  (-.) = liftOp2 $
+    op2 $ \v c ->
+      (v -. c, \dz -> (dz, -sumS dz))
+  {-# INLINE (/.) #-}
+  (/.) = liftOp2 $
+    op2 $ \v c ->
+      (v /. c, \dz -> (dz /. c, (-dz >.< v) / (c * c)))
+  {-# INLINE sumS #-}
+  sumS = liftOp1 $ op1 $ \x -> (sumS x, reps)
+  {-# INLINE (>.<) #-}
+  (>.<) = liftOp2 $
+    op2 $ \x y ->
+      (x >.< y, \dz -> (dz .* y, dz .* x))
+
+replicateMatA ::
+  forall n m a r f.
+  (KnownNat n, KnownNat m, Applicative f, M.Manifest r a) =>
+  f a ->
+  f (Mat r n m a)
+{-# INLINE replicateMatA #-}
+replicateMatA =
+  fmap Mat . M.makeArrayA (M.Sz2 (dimVal @m) (dimVal @n)) . const
+
+generateMatA ::
+  forall n m a r f.
+  (KnownNat n, KnownNat m, Applicative f, M.Manifest r a) =>
+  (M.Ix2 -> f a) ->
+  f (Mat r n m a)
+{-# INLINE generateMatA #-}
+generateMatA =
+  fmap Mat . M.makeArrayA (M.Sz2 (dimVal @m) (dimVal @n))
+
+replicateVecA ::
+  forall n a r f.
+  (KnownNat n, Applicative f, M.Manifest r a) =>
+  f a ->
+  f (Vec r n a)
+{-# INLINE replicateVecA #-}
+replicateVecA =
+  fmap Vec . M.makeArrayA (M.Sz1 (dimVal @n)) . const
+
+generateVecA ::
+  forall n a r f.
+  (KnownNat n, Applicative f, M.Manifest r a) =>
+  (M.Ix1 -> f a) ->
+  f (Vec r n a)
+{-# INLINE generateVecA #-}
+generateVecA =
+  fmap Vec . M.makeArrayA (M.Sz1 (dimVal @n))
+
+data SomeBatch t a where
+  MkSomeBatch :: (KnownNat m) => UMat m (Size t) a -> SomeBatch t a
+
+deriving instance (Show a, U.Unbox a) => Show (SomeBatch t a)
+
+fromBatchData ::
+  forall t a v.
+  (G.Vector v (t a), HasSize t, U.Unbox a) =>
+  v (t a) ->
+  SomeBatch t a
+fromBatchData ts =
+  case someNatVal $ fromIntegral $ G.length ts of
+    SomeNat (_ :: Proxy m) ->
+      MkSomeBatch @m $
+        Mat $
+          M.compute $
+            M.concat' 1 $ V.map (runMat . asColumn . toVec) $ G.convert ts
+
+{-
+>>> fromBatchData  $ V.fromList [Linear.V2 0 1, Linear.V2 2 3, Linear.V2 3 (4 :: Double)]
+MkSomeBatch (Mat {runMat = Array U Par (Sz (1 :. 6))
+  [ [ 0.0, 1.0, 2.0, 3.0, 3.0, 4.0 ]
+  ]})
+-}
+
+splitColAt ::
+  forall n m l r a.
+  (KnownNat n, M.Source r a) =>
+  Mat r (n + m) l a ->
+  (Mat M.D n l a, Mat M.D m l a)
+{-# INLINE splitColAt #-}
+splitColAt = coerce $ M.splitAt' 1 (dimVal @n)
+
+splitRowAt ::
+  forall n m l r a.
+  (KnownNat n, M.Source r a) =>
+  Mat r l (n + m) a ->
+  (Mat M.D l n a, Mat M.D l m a)
+{-# INLINE splitRowAt #-}
+splitRowAt = coerce $ M.splitAt' 2 (dimVal @n)
+
+{-
+>>> splitColAt @1 $ Mat @M.U @4 @3 $ M.compute $ 0 M...: (3 M.:. 4)
+(Mat {runMat = Array D Seq (Sz (3 :. 1))
+  [ [ 0 :. 0 ]
+  , [ 1 :. 0 ]
+  , [ 2 :. 0 ]
+  ]},Mat {runMat = Array D Seq (Sz (3 :. 3))
+  [ [ 0 :. 1, 0 :. 2, 0 :. 3 ]
+  , [ 1 :. 1, 1 :. 2, 1 :. 3 ]
+  , [ 2 :. 1, 2 :. 2, 2 :. 3 ]
+  ]})
+
+-}
+
+fromRowMat ::
+  forall v m t a.
+  ( FromVec t
+  , MU.Unbox a
+  , M.Load (VM.ARepr v) M.Ix1 (t a)
+  , M.Manifest (VM.ARepr v) (t a)
+  , G.Vector v (t a)
+  , v ~ VM.VRepr (VM.ARepr v)
+  ) =>
+  UMat m (Size t) a ->
+  v (t a)
+{-# INLINE fromRowMat #-}
+fromRowMat =
+  VM.toVector
+    . M.compute @(VM.ARepr v)
+    . M.map (fromVec . Vec)
+    . M.outerSlices
+    . runMat
+
+{-
+>>> fromBatchData @Linear.V2 (V.fromList [1, 2, 3, 4])
+MkSomeBatch (Mat {runMat = Array U Par (Sz (4 :. 2))
+  [ [ 1.0, 1.0 ]
+  , [ 2.0, 2.0 ]
+  , [ 3.0, 3.0 ]
+  , [ 4.0, 4.0 ]
+  ]})
+-}
+
+deriving instance (Floating a, MU.Unbox a) => M.NumericFloat M.U a

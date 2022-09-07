@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TypeApplications #-}
 
 module DeepLearning.Circles
   ( module DeepLearning.Circles.Types,
@@ -22,7 +23,7 @@ import Data.Function ((&))
 import Data.Vector.Generic.Lens (vectorTraverse)
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.Circles.Types
-import DeepLearning.NeuralNetowrk.HigherKinded
+import DeepLearning.NeuralNetowrk.Massiv
 import Diagrams.Prelude (Colour, Diagram, N, alignBL, fc, lc, moveTo, opacity, rect, square, strokeOpacity)
 import qualified Diagrams.Prelude as Dia
 import Linear (V1 (..), V2 (..), (*^), (^/))
@@ -33,33 +34,35 @@ trainByGradientDescent ::
   Double ->
   Int ->
   U.Vector ClusteredPoint ->
-  NeuralNetwork V2 hs V1 Double ->
-  NeuralNetwork V2 hs V1 Double
+  NeuralNetwork 2 hs 1 Double ->
+  NeuralNetwork 2 hs 1 Double
 trainByGradientDescent gamma epochs =
-  trainGD gamma epochs crossEntropy
-    . U.map \(ClusteredPoint pt clus) -> (pt ^. _Point, realToFrac $ fromEnum clus)
+  trainGDF gamma epochs crossEntropy
+    . U.map \(ClusteredPoint pt clus) -> (pt ^. _Point, clusterNum clus)
+
+clusterNum :: Cluster -> V1 Double
+clusterNum = realToFrac . fromEnum
 
 trainByAdam ::
-  (Applicative (WeightStack V2 hs V1)) =>
   Double ->
   AdamParams Double ->
   Int ->
   U.Vector ClusteredPoint ->
-  NeuralNetwork V2 hs V1 Double ->
-  NeuralNetwork V2 hs V1 Double
+  NeuralNetwork 2 hs 1 Double ->
+  NeuralNetwork 2 hs 1 Double
 trainByAdam gamma params epochs =
-  trainAdam gamma params epochs crossEntropy
-    . U.map \(ClusteredPoint pt clus) -> (pt ^. _Point, realToFrac $ fromEnum clus)
+  trainAdamF gamma params epochs crossEntropy
+    . U.map \(ClusteredPoint pt clus) -> (pt ^. _Point, clusterNum clus)
 
-predict :: NeuralNetwork V2 hs V1 Double -> Point V2 Double -> Cluster
+predict :: NeuralNetwork 2 hs 1 Double -> Point V2 Double -> Cluster
 predict net =
-  view _Point >>> evalNN net >>> \(V1 p) ->
+  view _Point >>> evalF net >>> \(V1 p) ->
     if not $ isNaN p && isInfinite p
       then if p < 0.5 then Cluster0 else Cluster1
       else error "Nan!"
 
 predictionAccuracy ::
-  NeuralNetwork V2 hs V1 Double -> U.Vector ClusteredPoint -> Double
+  NeuralNetwork 2 hs 1 Double -> U.Vector ClusteredPoint -> Double
 predictionAccuracy nn =
   L.foldOver vectorTraverse $
     L.premap

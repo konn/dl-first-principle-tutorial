@@ -13,6 +13,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
@@ -24,8 +25,6 @@ import Control.DeepSeq (force)
 import Control.Exception (evaluate)
 import Control.Lens hiding (Snoc)
 import Control.Monad ((<=<))
-import Data.DList (DList)
-import qualified Data.DList as DL
 import Data.Foldable (foldlM, forM_)
 import Data.Functor (void)
 import qualified Data.List as List
@@ -33,20 +32,16 @@ import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NE
 import Data.List.Split (splitOn)
 import Data.Maybe (fromMaybe)
-import Data.Monoid
-import Data.Proxy (Proxy (..))
 import Data.Strict (Pair (..))
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.Circles
-import DeepLearning.NeuralNetowrk.HigherKinded
+import DeepLearning.NeuralNetowrk.Massiv
 import Diagrams.Backend.Rasterific
 import Diagrams.Prelude (Diagram, alignB, alignT, bg, black, blend, centerXY, fc, green, lc, mkHeight, orange, p2, pad, scale, strokeOpacity, white, (===), (|||))
 import qualified Diagrams.Prelude as Dia
-import GHC.TypeNats
 import Generic.Data
 import Linear
 import Linear.Affine
-import Linear.V (V)
 import Numeric.Natural (Natural)
 import qualified Options.Applicative as Opts
 import System.Directory (createDirectoryIfMissing)
@@ -130,7 +125,7 @@ savePointImage fp pts =
 
 mkPredictionImage ::
   (Dia.N b ~ Double, Dia.V b ~ V2, Dia.Renderable (Dia.Path V2 Double) b) =>
-  NeuralNetwork V2 ls V1 Double ->
+  NeuralNetwork 2 ls 1 Double ->
   Vector ClusteredPoint ->
   Diagram b
 mkPredictionImage nn pts =
@@ -138,7 +133,7 @@ mkPredictionImage nn pts =
     [ drawClusteredPoints pts & lc black & strokeOpacity 1.0
     , pixelateScalarField
         64
-        (view _x . evalNN nn . view _Point)
+        (view (_x @V1) . evalF nn . view _Point)
         (\α -> blend (min 1.0 $ max 0.0 α) green orange)
         (p2 (-1.25, -1.25))
         (p2 (1.25, 1.25))
@@ -146,7 +141,7 @@ mkPredictionImage nn pts =
 
 savePredictionComparisonImage ::
   FilePath ->
-  NeuralNetwork V2 ls V1 Double ->
+  NeuralNetwork 2 ls 1 Double ->
   (String, Vector ClusteredPoint) ->
   (String, Vector ClusteredPoint) ->
   IO ()
@@ -163,85 +158,16 @@ savePredictionComparisonImage fp nn (lab0, pts0) (lab1, pts1) =
       & pad 1.1
       & bg green
 
-data SomeNetSeed i o where
-  MkSomeNetSeed ::
-    (Describable Layer ls, Applicative (WeightStack i ls o)) =>
-    Network ActivatorProxy i ls o Double ->
-    SomeNetSeed i o
-
-withSomeNetwork ::
-  NonEmpty Natural ->
-  ( forall ls.
-    (Describable Layer ls, Applicative (WeightStack V2 ls V1)) =>
-    NeuralNetwork V2 ls V1 Double ->
-    IO a
-  ) ->
-  IO a
-withSomeNetwork layers f = case toSomeNetworkSeed layers of
-  MkSomeNetSeed net ->
-    f =<< randomNetwork globalStdGen net
-
-toSomeNetworkSeed :: NonEmpty Natural -> SomeNetSeed V2 V1
-toSomeNetworkSeed = go . NE.toList
-  where
-    go :: Applicative v => [Natural] -> SomeNetSeed v V1
-    go [] = MkSomeNetSeed $ Output sigmoidP
-    go (n : ns) = case someNatVal n of
-      SomeNat (_ :: Proxy n) ->
-        case go @(V n) ns of
-          MkSomeNetSeed net -> MkSomeNetSeed $ reLUP @(V n) :- net
-
-data NetworkDescr = NetworkDescr {hiddenLayers :: !(Sum Int, DList Int), neurons :: !(Sum Int), parameters :: !(Sum Int)}
-  deriving (Show, Eq, Ord, Generic)
-  deriving (Semigroup, Monoid) via Generically NetworkDescr
-
-class Describable h ls where
-  describe ::
-    (Applicative i, Foldable i, Applicative o, Foldable o, Foldable (h i o)) =>
-    Network h i ls o a ->
-    NetworkDescr
-
-instance Describable h '[] where
-  describe (Output h :: Network h i '[] o a) =
-    mempty {parameters = Sum $ length h}
-
-instance
-  ( forall x y. (Foldable x, Foldable y) => Foldable (h x y)
-  , Describable h ls
-  ) =>
-  Describable h (l ': ls)
-  where
-  describe (h :- rest) =
-    let numNeuron = length $ pure @l ()
-     in mempty
-          { parameters = Sum $ length h
-          , neurons = Sum numNeuron
-          , hiddenLayers = (1, DL.singleton numNeuron)
-          }
-          <> describe rest
-
-putNetworkInfo ::
-  ( Applicative i
-  , Foldable i
-  , Applicative o
-  , Foldable o
-  , Foldable (h i o)
-  , Describable h ls
-  ) =>
-  Network h i ls o a ->
-  IO ()
-putNetworkInfo net = do
-  let NetworkDescr {..} = describe net
-  putStrLn $
-    printf
-      "** %d hidden layer(s) (%s), %d neurons (%d parameters)"
-      (getSum $ fst hiddenLayers)
-      (showDim $ DL.toList $ snd hiddenLayers)
-      (getSum neurons)
-      (getSum parameters)
-
 showDim :: Show a => [a] -> String
 showDim = List.intercalate "x" . map show
+
+putNetworkInfo :: KnownNat i => NeuralNetwork i hs o a -> IO ()
+putNetworkInfo net =
+  let NetworkStat{..} = networkStat net
+      !lays = DL.toList layers
+  in putStrLn $ 
+        printf "** Network of %d layers (%s), %d parameters."
+        (length lays) (show lays) parameters
 
 dualCircleTest :: Opts -> IO ()
 dualCircleTest Opts {..} = do
@@ -256,7 +182,8 @@ dualCircleTest Opts {..} = do
   putStrLn $
     printf "* Circle isolation, Circle isolation, %d epochs, learning rate = %f" epochs gamma
 
-  forM_ layers $ \lay -> withSomeNetwork lay $ \net0 -> do
+  forM_ layers $ \lay -> withSimpleNetwork (map (,ReLU) $ NE.toList lay) $ \seeds -> do
+    net0 <- randomNetwork globalStdGen seeds
     putNetworkInfo net0
 
     putStrLn $ printf "Initial training accuracy (GD): %f" $ predictionAccuracy net0 trainSet * 100
@@ -292,7 +219,8 @@ dualSpiralTest Opts {..} = do
   savePointImage (spiralWorkDir </> "train.png") trainSet
   savePointImage (spiralWorkDir </> "test.png") testSet
 
-  forM_ layers $ \lay -> withSomeNetwork lay $ \net0 -> do
+  forM_ layers $ \lay -> withSimpleNetwork (map (,ReLU) $ NE.toList lay) $ \seeds -> do
+    net0 <- randomNetwork globalStdGen seeds
     putNetworkInfo net0
     let (qs, r) = epochs `quotRem` 10
         es

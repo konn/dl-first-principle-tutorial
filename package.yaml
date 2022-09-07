@@ -35,11 +35,14 @@ dependencies:
 - directory
 - distributive
 - dlist
+- equational-reasoning
 - filepath
 - foldl
 - generic-data
 - generic-lens
 - ghc-typelits-knownnat
+- ghc-typelits-presburger
+- type-natural
 - lens
 - linear
 - massiv
@@ -66,6 +69,7 @@ ghc-options:
 - -Wmissing-home-modules
 - -Wpartial-fields
 - -Wredundant-constraints
+- -fsimpl-tick-factor=1000
 
 library:
   source-dirs: src
@@ -84,6 +88,8 @@ executables:
     source-dirs:  app/circles
     ghc-options:
     - -O2
+    - -threaded
+    - -with-rtsopts=-N
     dependencies: 
     - dl-first-principle-tutorial
     - optparse-applicative
