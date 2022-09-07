@@ -49,6 +49,7 @@ import Numeric.Natural (Natural)
 import qualified Options.Applicative as Opts
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath ((</>))
+import System.IO (BufferMode (LineBuffering), hSetBuffering, stdout)
 import System.Random.Stateful (globalStdGen)
 import Text.Printf (printf)
 import Text.Read (readMaybe)
@@ -212,6 +213,7 @@ adams = AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-16}
 
 dualSpiralTest :: Opts -> IO ()
 dualSpiralTest Opts {..} = do
+  hSetBuffering stdout LineBuffering
   createDirectoryIfMissing True spiralWorkDir
   trainSet <- evaluate . force =<< dualSpirals globalStdGen 400 0.05
   testSet <- evaluate . force =<< dualSpirals globalStdGen 200 0.05

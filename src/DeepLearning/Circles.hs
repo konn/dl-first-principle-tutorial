@@ -21,18 +21,15 @@ where
 import Control.Arrow ((>>>))
 import Control.Lens (view, (^.))
 import Control.Subcategory (czipWith)
-import Control.Subcategory.Linear (SomeBatch (..), UMat, VectorSpace (sumS), computeM, dimVal, fromBatchData, generateMat, rowAt, splitRowAt, unMat, unVec)
+import Control.Subcategory.Linear (SomeBatch (..), UMat, VectorSpace (sumS), computeM, dimVal, fromBatchData, rowAt, splitRowAt, unVec)
 import Data.Function ((&))
 import Data.Functor.Product (Product (..))
-import Data.Massiv.Array (Ix2 (..))
 import qualified Data.Massiv.Array as M
-import Data.Proxy (Proxy)
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.Circles.Types
 import DeepLearning.NeuralNetowrk.Massiv
 import Diagrams.Prelude (Colour, Diagram, N, alignBL, fc, lc, moveTo, opacity, rect, square, strokeOpacity)
 import qualified Diagrams.Prelude as Dia
-import GHC.TypeNats (SomeNat (..), someNatVal)
 import Linear
 import Linear.Affine
 import Type.Reflection (Typeable)
@@ -102,27 +99,24 @@ pixelateCluster divs toColour ll ur = withKnownNetwork $ \nn ->
       dx = min w h / fromIntegral divs
       xDiv = ceiling (w / dx)
       yDiv = ceiling (h / dx)
-   in case someNatVal $ xDiv * yDiv of
-        SomeNat (_ :: Proxy nPts) ->
-          let pts = generateMat @nPts @2 $ \(i :. j) ->
-                let (xN, yN) = i `quotRem` fromIntegral xDiv
-                    pt = ll .+^ dx *^ V2 (fromIntegral xN) (fromIntegral yN)
-                 in if j == 0 then pt ^. _x else pt ^. _y
-              !preds = rowAt @0 $ evalBatchNN nn pts
+      pts0 =
+        U.fromList
+          [ ll .+^ dx *^ V2 (fromIntegral xN) (fromIntegral yN)
+          | xN <- [0 .. xDiv - 1 :: Int]
+          , yN <- [0 .. yDiv - 1 :: Int]
+          ]
+   in case fromBatchData pts0 of
+        MkSomeBatch pts ->
+          let !preds = rowAt @0 $ evalBatchNN nn pts
               !mainDia =
                 M.foldMono
                   id
                   $ M.zipWith
-                    ( \cds f ->
+                    ( \pt f ->
                         let col = toColour f
-                            pt = P $ V2 (cds M.! 0) (cds M.! 1)
-                         in square dx
-                              & alignBL
-                              & lc col
-                              & fc col
-                              & moveTo pt
+                         in square dx & alignBL & lc col & fc col & moveTo pt
                     )
-                    (M.outerSlices $ unMat pts)
+                    (M.fromUnboxedVector M.Par pts0)
                     (unVec preds)
            in mainDia
                 <> (rect w h & alignBL & moveTo ll & opacity 0.0 & strokeOpacity 0.0)
