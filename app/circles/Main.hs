@@ -217,8 +217,8 @@ dualSpiralTest :: Opts -> IO ()
 dualSpiralTest Opts {..} = do
   now <- getZonedTime
   let stamp = formatTime defaultTimeLocale "%Y%m%d-%H%M%S" now
-      workDir = spiralWorkDir </> stamp
-  createDirectoryIfMissing True workDir
+      work = spiralWorkDir </> stamp
+  createDirectoryIfMissing True work
   trainSet <- evaluate . force =<< dualSpirals globalStdGen 400 0.05
   testSet <- evaluate . force =<< dualSpirals globalStdGen 200 0.05
   putStrLn ""
@@ -228,13 +228,13 @@ dualSpiralTest Opts {..} = do
       "* Dual spiral classification, %d epochs, learn rate = %f"
       epochs
       gamma
-  savePointImage (workDir </> "train.png") trainSet
-  savePointImage (workDir </> "test.png") testSet
+  savePointImage (work </> "train.png") trainSet
+  savePointImage (work </> "test.png") testSet
 
   forM_ layers $ \lay ->
     withSimpleNetwork (map (,ReLU) $ NE.toList lay) $ \seeds -> do
       let dimStr = showDim $ NE.toList lay
-          layDir = workDir </> dimStr
+          layDir = work </> dimStr
       createDirectoryIfMissing True layDir
       !net0 <- evaluate =<< randomNetwork globalStdGen seeds
       putNetworkInfo net0
