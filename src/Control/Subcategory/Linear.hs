@@ -132,13 +132,13 @@ import Numeric.Backprop
 infixl 6 ^+^, ^-^, ^+, +^, ^-, -^
 
 computeV :: (M.Manifest r a) => Vec M.D n a -> Vec r n a
-computeV = coerce M.compute
+computeV = coerce M.computeP
 
 delayV :: (M.Source r a) => Vec r n a -> Vec M.D n a
 delayV = coerce M.delay
 
 computeM :: (M.Manifest r a) => Mat M.D n m a -> Mat r n m a
-computeM = coerce M.compute
+computeM = coerce M.computeP
 
 delayM :: (M.Source r a) => Mat r n m a -> Mat M.D n m a
 delayM = coerce M.delay
@@ -1061,7 +1061,7 @@ fromBatchData ts =
     SomeNat (_ :: Proxy m) ->
       MkSomeBatch @m $
         Mat $
-          M.compute $
+          M.computeP $
             M.concat' 1 $ V.map (runMat . asColumn . toVec) $ G.convert ts
 
 {-
@@ -1088,7 +1088,7 @@ splitRowAt ::
 splitRowAt = coerce $ M.splitAt' 2 (dimVal @n)
 
 {-
->>> splitColAt @1 $ Mat @M.U @4 @3 $ M.compute $ 0 M...: (3 M.:. 4)
+>>> splitColAt @1 $ Mat @M.U @4 @3 $ M.computeP $ 0 M...: (3 M.:. 4)
 (Mat {runMat = Array D Seq (Sz (3 :. 1))
   [ [ 0 :. 0 ]
   , [ 1 :. 0 ]
@@ -1115,7 +1115,7 @@ fromRowMat ::
 {-# INLINE fromRowMat #-}
 fromRowMat =
   VM.toVector
-    . M.compute @(VM.ARepr v)
+    . M.computeP @(VM.ARepr v)
     . M.map (fromVec . Vec)
     . M.outerSlices
     . runMat
