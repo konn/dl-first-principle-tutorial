@@ -7,10 +7,10 @@
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MagicHash #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -91,7 +91,6 @@ module Control.Subcategory.Linear
     sumRows,
     sumCols,
     dimVal,
-    VectorSpace (..),
     trans,
     duplicateAsCols',
     (!*:),
@@ -106,6 +105,9 @@ module Control.Subcategory.Linear
     generateVec,
     fromBatchData,
     fromRowMat,
+
+    -- ** Re-exports
+    module Numeric.VectorSpace,
   )
 where
 
@@ -134,6 +136,7 @@ import qualified Linear
 import Linear.Affine (Point (..))
 import qualified Linear.V as LinearV
 import Numeric.Backprop
+import Numeric.VectorSpace
 
 infixl 6 ^+^, ^-^, ^+, +^, ^-, -^
 
@@ -602,8 +605,6 @@ infixl 6 !+!, !-!, !+, !-
 
 infixl 7 *!!, !!*, !*!, !.!, !!/, !/!, !*, *!
 
-infix 7 >.<
-
 infixr 8 !^
 
 (!+!) :: forall n m r a. M.Numeric r a => Mat r n m a -> Mat r n m a -> Mat r n m a
@@ -891,49 +892,6 @@ asRow :: forall r n a. (M.Size r, KnownNat n) => Vec r n a -> Mat r n 1 a
 {-# INLINE asRow #-}
 asRow = coerce $ M.resize' (M.Sz2 1 (dimVal @n))
 
-infixl 6 .+, +., .-, -.
-
-infixr 7 .*
-
-infixl 7 /., *.
-
-instance VectorSpace Double Double where
-  reps = id
-  {-# INLINE reps #-}
-  (.*) = (*)
-  {-# INLINE (.*) #-}
-  (+.) = (+)
-  {-# INLINE (+.) #-}
-  (.+) = (+)
-  {-# INLINE (.+) #-}
-  (-.) = (-)
-  {-# INLINE (-.) #-}
-  (.-) = (-)
-  {-# INLINE (.-) #-}
-  (*.) = (*)
-  {-# INLINE (*.) #-}
-  (/.) = (/)
-  {-# INLINE (/.) #-}
-  (>.<) = (*)
-  {-# INLINE (>.<) #-}
-  sumS = id
-  {-# INLINE sumS #-}
-
-class Floating k => VectorSpace k v | v -> k where
-  reps :: k -> v
-  (.*) :: k -> v -> v
-  (+.) :: v -> k -> v
-  (.+) :: k -> v -> v
-  (-.) :: v -> k -> v
-  (.-) :: k -> v -> v
-  (*.) :: v -> k -> v
-  (/.) :: v -> k -> v
-
-  -- | Dot-product
-  (>.<) :: v -> v -> k
-
-  sumS :: v -> k
-
 instance
   (M.NumericFloat r a, KnownNat n, M.Manifest r a, M.Load r M.Ix1 a) =>
   VectorSpace a (Vec r n a)
@@ -989,44 +947,6 @@ instance
 trans :: M.Source r a => Mat r n m a -> Mat M.D m n a
 {-# INLINE trans #-}
 trans = coerce M.transpose
-
-instance
-  (Reifies s W, Floating a, Backprop k, Backprop a, VectorSpace k a) =>
-  VectorSpace (BVar s k) (BVar s a)
-  where
-  {-# INLINE reps #-}
-  reps = liftOp1 $
-    op1 $ \x -> (reps x, const 0)
-  {-# INLINE (.*) #-}
-  (.*) = liftOp2 $
-    op2 $ \c v ->
-      (c .* v, \dz -> (dz >.< v, c .* dz))
-  {-# INLINE (*.) #-}
-  (*.) = flip (.*)
-  {-# INLINE (.+) #-}
-  (.+) = liftOp2 $
-    op2 $ \c v ->
-      (c .+ v, \dz -> (sumS dz, dz))
-  {-# INLINE (+.) #-}
-  (+.) = flip (.+)
-  {-# INLINE (.-) #-}
-  (.-) = liftOp2 $
-    op2 $ \c v ->
-      (c .- v, \dz -> (sumS dz, -dz))
-  {-# INLINE (-.) #-}
-  (-.) = liftOp2 $
-    op2 $ \v c ->
-      (v -. c, \dz -> (dz, -sumS dz))
-  {-# INLINE (/.) #-}
-  (/.) = liftOp2 $
-    op2 $ \v c ->
-      (v /. c, \dz -> (dz /. c, (-dz >.< v) / (c * c)))
-  {-# INLINE sumS #-}
-  sumS = liftOp1 $ op1 $ \x -> (sumS x, reps)
-  {-# INLINE (>.<) #-}
-  (>.<) = liftOp2 $
-    op2 $ \x y ->
-      (x >.< y, \dz -> (dz .* y, dz .* x))
 
 replicateMatA ::
   forall n m a r f.

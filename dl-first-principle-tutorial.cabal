@@ -35,6 +35,7 @@ library
       DeepLearning.NeuralNetowrk.Massiv
       Numeric.Function.Activation
       Numeric.Optimisation
+      Numeric.VectorSpace
   other-modules:
       Paths_dl_first_principle_tutorial
   hs-source-dirs:
@@ -71,11 +72,13 @@ library
     , mwc-random
     , random
     , reflection
+    , semigroupoids
     , sized
     , split
     , strict
     , subcategories
     , these
+    , transformers
     , type-natural
     , vector
     , vector-th-unbox
@@ -121,12 +124,14 @@ executable circles
     , optparse-applicative
     , random
     , reflection
+    , semigroupoids
     , sized
     , split
     , strict
     , subcategories
     , these
     , time
+    , transformers
     , type-natural
     , vector
     , vector-th-unbox
@@ -172,11 +177,66 @@ executable iris
     , optparse-applicative
     , random
     , reflection
+    , semigroupoids
     , sized
     , split
     , strict
     , subcategories
     , these
+    , transformers
+    , type-natural
+    , vector
+    , vector-th-unbox
+  default-language: Haskell2010
+
+executable spirals-batchnorm
+  main-is: Main.hs
+  other-modules:
+      Paths_dl_first_principle_tutorial
+  hs-source-dirs:
+      app/spirals-batchnorm
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -fsimpl-tick-factor=1000 -O2 -threaded -with-rtsopts=-N
+  build-depends:
+      ad
+    , adjunctions
+    , backprop
+    , base >=4.7 && <5
+    , bitvec
+    , bytestring
+    , cassava
+    , deepseq
+    , diagrams-core
+    , diagrams-lib
+    , diagrams-rasterific
+    , diagrams-svg
+    , directory
+    , distributive
+    , dl-first-principle-tutorial
+    , dlist
+    , equational-reasoning
+    , filepath
+    , foldl
+    , generic-data
+    , generic-lens
+    , ghc-typelits-knownnat
+    , ghc-typelits-presburger
+    , lens
+    , linear
+    , massiv
+    , massiv-io
+    , matrix
+    , mwc-random
+    , optparse-applicative
+    , random
+    , reflection
+    , semigroupoids
+    , sized
+    , split
+    , strict
+    , subcategories
+    , these
+    , time
+    , transformers
     , type-natural
     , vector
     , vector-th-unbox

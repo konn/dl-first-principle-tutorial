@@ -6,10 +6,10 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedLabels #-}
@@ -27,7 +27,10 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# OPTIONS_GHC -Wno-partial-type-signatures #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
+
+{-# HLINT ignore "Redundant bracket" #-}
 
 module DeepLearning.NeuralNetowrk.Massiv
   ( -- * Central data-types
@@ -37,7 +40,8 @@ module DeepLearning.NeuralNetowrk.Massiv
     activationVal,
     withSimpleNetwork,
     Network (..),
-    Layer (..),
+    RecParams (..),
+    Weights (..),
     Activation (..),
     SomeActivation (..),
     someActivation,
@@ -80,9 +84,6 @@ module DeepLearning.NeuralNetowrk.Massiv
     runNN,
     runLayer,
     gradNN,
-    GradStack,
-    toGradientStack,
-    fromGradientStack,
     SLayerKind (..),
     KnownLayerKind (..),
     LayerLike,
@@ -104,9 +105,12 @@ module DeepLearning.NeuralNetowrk.Massiv
   )
 where
 
-import Control.Lens (Lens', lens)
+import Control.Applicative (liftA2)
+import Control.Arrow ((&&&), (>>>))
+import Control.Lens (Lens', lens, _1, _2)
 import Control.Subcategory (CZip (..), cmap)
 import Control.Subcategory.Linear
+import Data.Bifunctor (bimap)
 import Data.Coerce (coerce)
 import qualified Data.DList as DL
 import Data.Functor.Product (Product)
@@ -119,6 +123,7 @@ import Data.Monoid (Sum (..))
 import Data.Proxy (Proxy)
 import Data.Strict (Pair (..))
 import qualified Data.Strict.Tuple as SP
+import Data.Tuple (swap)
 import Data.Type.Natural
 import qualified Data.Vector.Generic as G
 import Data.Vector.Orphans
@@ -127,7 +132,7 @@ import Generic.Data
 import Numeric.Backprop
 import Numeric.Function.Activation (sigmoid)
 import Numeric.Natural (Natural)
-import System.Random.MWC.Distributions (normal, standard)
+import System.Random.MWC.Distributions (normal)
 import System.Random.Stateful
 
 data LayerKind = Aff | Lin | Act Activation | BN
@@ -221,7 +226,7 @@ data LayerSpec l n m a where
   AffP :: a -> LayerSpec 'Aff n m a
   LinP :: a -> LayerSpec 'Lin n m a
   ActP :: KnownActivation act => LayerSpec ( 'Act act) n n a
-  BNP :: a -> LayerSpec 'BN n n a
+  BNP :: LayerSpec 'BN n n a
 
 deriving instance Show a => Show (LayerSpec l n m a)
 
@@ -247,232 +252,349 @@ tanh_ = ActP
 passthru_ :: forall i a. LayerSpec (Act 'Id) i i a
 passthru_ = ActP
 
-batchnorm :: forall i a. a -> LayerSpec 'BN i i a
+batchnorm :: forall i a. LayerSpec 'BN i i a
 batchnorm = BNP
 
 type Activation' :: (Type -> Type) -> LayerKind -> Nat -> Nat -> Type -> Type
 data Activation' m l i o a = Activation' {getActivation :: Activation, seed :: m a}
   deriving (Show, Eq, Ord, Generic, Bounded, Functor, Foldable, Traversable)
 
-type Layer :: LayerKind -> Nat -> Nat -> Type -> Type
-data Layer l i o a where
-  Affine :: !(UMat i o a) -> !(UVec o a) -> Layer Aff i o a
-  Linear :: !(UMat i o a) -> Layer Lin i o a
-  Activate :: !(SActivation act) -> Layer (Act act) i i a
-  BatchNorm :: !(UVec i a) -> !(UVec i a) -> !(UVec i a) -> !(UVec i a) -> Layer BN i i a
+-- | Weights optimised by backprop.
+type Weights :: LayerKind -> Nat -> Nat -> Type -> Type
+data Weights l i o a where
+  AffW :: !(UMat i o a) -> !(UVec o a) -> Weights 'Aff i o a
+  LinW :: !(UMat i o a) -> Weights 'Lin i o a
+  ActW :: Weights ( 'Act act) i i a
+  BatW :: {scale, shift :: !(UVec i a)} -> Weights 'BN i i a
 
-instance
-  (KnownLayerKind l i o, KnownNat i, KnownNat o, Num a, U.Unbox a) =>
-  Num (Layer l i o a)
-  where
-  {-# INLINE fromInteger #-}
-  fromInteger = case sLayerKind @l @i @o of
-    SAff -> Affine <$> fromInteger <*> fromInteger
-    SLin -> Linear <$> fromInteger
-    SAct sact -> const $ Activate sact
-    SBN -> BatchNorm <$> fromInteger <*> fromInteger <*> fromInteger <*> fromInteger
-  (+) = liftBinW (+) (+)
+liftBinWs ::
+  (UMat i o a -> UMat i o a -> UMat i o a) ->
+  (UVec o a -> UVec o a -> UVec o a) ->
+  Weights l i o a ->
+  Weights l i o a ->
+  Weights l i o a
+{-# INLINE liftBinWs #-}
+liftBinWs fW fV (AffW w b) (AffW w' b') = AffW (fW w w') (fV b b')
+liftBinWs fW _ (LinW w) (LinW w') = LinW (fW w w')
+liftBinWs _ _ l@ActW ActW {} = l
+liftBinWs _ fV (BatW w b) (BatW w' b') = BatW (fV w w') (fV b b')
+
+liftUnWs ::
+  (UMat i o a -> UMat i o a) ->
+  (UVec o a -> UVec o a) ->
+  Weights l i o a ->
+  Weights l i o a
+{-# INLINE liftUnWs #-}
+liftUnWs fW fV (AffW w b) = AffW (fW w) (fV b)
+liftUnWs fW _ (LinW w) = LinW (fW w)
+liftUnWs _ _ l@ActW = l
+liftUnWs _ fV (BatW scale shift) = BatW (fV scale) (fV shift)
+
+instance (KnownLayerKind l i o, U.Unbox a, Floating a) => Num (Weights l i o a) where
+  (+) = liftBinWs (+) (+)
   {-# INLINE (+) #-}
-  (-) = liftBinW (-) (-)
+  (-) = liftBinWs (-) (-)
   {-# INLINE (-) #-}
-  (*) = liftBinW (*) (*)
+  (*) = liftBinWs (*) (*)
   {-# INLINE (*) #-}
-  negate = liftUnW negate negate
-  {-# INLINE negate #-}
-  signum = liftUnW signum signum
-  {-# INLINE signum #-}
-  abs = liftUnW abs abs
+  abs = liftUnWs abs abs
   {-# INLINE abs #-}
+  signum = liftUnWs signum signum
+  {-# INLINE signum #-}
+  fromInteger = reps . fromInteger
+  {-# INLINE fromInteger #-}
+  negate = liftUnWs negate negate
+  {-# INLINE negate #-}
 
-instance
-  (KnownLayerKind l i o, KnownNat i, KnownNat o, Floating a, U.Unbox a) =>
-  Fractional (Layer l i o a)
-  where
-  fromRational = case sLayerKind @l @i @o of
-    SAff -> Affine <$> fromRational <*> fromRational
-    SLin -> Linear <$> fromRational
-    SAct sact -> const $ Activate sact
-    SBN -> BatchNorm <$> fromRational <*> fromRational <*> fromRational <*> fromRational
+instance (KnownLayerKind l i o, U.Unbox a, Floating a) => Fractional (Weights l i o a) where
+  fromRational = reps . fromRational
   {-# INLINE fromRational #-}
-  recip = liftUnW recip recip
+  recip = liftUnWs recip recip
   {-# INLINE recip #-}
-  (/) = liftBinW (/) (/)
+  (/) = liftBinWs (/) (/)
   {-# INLINE (/) #-}
 
 instance
-  (KnownLayerKind l i o, KnownNat i, KnownNat o, Floating a, U.Unbox a) =>
-  Floating (Layer l i o a)
+  (KnownLayerKind l i o, U.Unbox a, Floating a) =>
+  Floating (Weights l i o a)
   where
-  pi = case sLayerKind @l @i @o of
-    SAff -> Affine pi pi
-    SLin -> Linear pi
-    SAct sact -> Activate sact
-    SBN -> BatchNorm pi pi pi pi
+  pi = reps pi
   {-# INLINE pi #-}
-  exp = liftUnW exp exp
+  exp = liftUnWs exp exp
   {-# INLINE exp #-}
-  log = liftUnW log log
+  log = liftUnWs log log
   {-# INLINE log #-}
-  sin = liftUnW sin sin
+  sin = liftUnWs sin sin
   {-# INLINE sin #-}
-  cos = liftUnW cos cos
+  cos = liftUnWs cos cos
   {-# INLINE cos #-}
-  tan = liftUnW tan tan
+  tan = liftUnWs tan tan
   {-# INLINE tan #-}
-  asin = liftUnW asin asin
+  asin = liftUnWs asin asin
   {-# INLINE asin #-}
-  acos = liftUnW acos acos
+  acos = liftUnWs acos acos
   {-# INLINE acos #-}
-  atan = liftUnW atan atan
+  atan = liftUnWs atan atan
   {-# INLINE atan #-}
-  sinh = liftUnW sinh sinh
+  sinh = liftUnWs sinh sinh
   {-# INLINE sinh #-}
-  cosh = liftUnW cosh cosh
+  cosh = liftUnWs cosh cosh
   {-# INLINE cosh #-}
-  tanh = liftUnW tanh tanh
+  tanh = liftUnWs tanh tanh
   {-# INLINE tanh #-}
-  asinh = liftUnW asinh asinh
+  asinh = liftUnWs asinh asinh
   {-# INLINE asinh #-}
-  acosh = liftUnW acosh acosh
+  acosh = liftUnWs acosh acosh
   {-# INLINE acosh #-}
-  atanh = liftUnW atanh atanh
+  atanh = liftUnWs atanh atanh
   {-# INLINE atanh #-}
 
-newtype Grads l i o a = Grads (Layer l i o a)
-  deriving newtype (Show)
-
-deriving newtype instance
-  (KnownNat i, KnownNat o, U.Unbox a, Num a) => Backprop (Grads l i o a)
-
-deriving newtype instance
-  (KnownNat i, KnownNat o, U.Unbox a, Floating a, KnownLayerKind l i o) =>
-  VectorSpace a (Grads l i o a)
-
-type GradStack = Network Grads
-
-liftBinW ::
-  (UVec o a -> UVec o a -> UVec o a) ->
-  (UMat i o a -> UMat i o a -> UMat i o a) ->
-  Layer l i o a ->
-  Layer l i o a ->
-  Layer l i o a
-{-# INLINE liftBinW #-}
-liftBinW fV fM (Affine mat vec) (Affine mat' vec') =
-  Affine (fM mat mat') (fV vec vec')
-liftBinW _ fM (Linear mat) (Linear mat') = Linear $ fM mat mat'
-liftBinW _ _ l@Activate {} Activate {} = l
-liftBinW fV _ (BatchNorm mu sigma w b) (BatchNorm mu' sigma' w' b') =
-  BatchNorm (fV mu mu') (fV sigma sigma') (fV w w') (fV b b')
-
-liftUnW ::
-  (UVec o a -> UVec o a) ->
-  (UMat i o a -> UMat i o a) ->
-  Layer l i o a ->
-  Layer l i o a
-{-# INLINE liftUnW #-}
-liftUnW fV fM = \case
-  (Affine mat vec) -> Affine (fM mat) (fV vec)
-  (Linear mat) -> Linear (fM mat)
-  l@Activate {} -> l
-  (BatchNorm vec vec' vec2 vec3) ->
-    BatchNorm (fV vec) (fV vec') (fV vec2) (fV vec3)
-
 instance
-  (Floating a, U.Unbox a, KnownNat i, KnownNat o, KnownLayerKind l i o) =>
-  VectorSpace a (Layer l i o a)
+  (KnownLayerKind l i o, U.Unbox a, Floating a) =>
+  VectorSpace a (Weights l i o a)
   where
-  reps x = case sLayerKind @l @i @o of
-    SAff -> Affine (reps x) (reps x)
-    SLin -> Linear (reps x)
-    SAct sact -> Activate sact
-    SBN -> BatchNorm (reps x) (reps x) (reps x) (reps x)
-  (.*) = liftUnW <$> (.*) <*> (.*)
+  reps = case sLayerKind @l @i @o of
+    SAff -> AffW <$> reps <*> reps
+    SLin -> LinW <$> reps
+    SAct _ -> const ActW
+    SBN -> BatW <$> reps <*> reps
+  {-# INLINE reps #-}
+  (.*) = liftUnWs <$> (.*) <*> (.*)
   {-# INLINE (.*) #-}
-  (.+) = liftUnW <$> (.+) <*> (.+)
-  {-# INLINE (.+) #-}
-  (+.) = flip $ liftUnW <$> flip (+.) <*> flip (+.)
-  {-# INLINE (+.) #-}
-  (.-) = liftUnW <$> (.-) <*> (.-)
-  {-# INLINE (.-) #-}
-  (-.) = flip $ liftUnW <$> flip (-.) <*> flip (-.)
-  {-# INLINE (-.) #-}
-  (*.) = flip $ liftUnW <$> flip (*.) <*> flip (*.)
+  (*.) = flip $ liftUnWs <$> flip (*.) <*> flip (*.)
   {-# INLINE (*.) #-}
-  (/.) = flip $ liftUnW <$> flip (/.) <*> flip (/.)
+  (.+) = liftUnWs <$> (.+) <*> (.+)
+  {-# INLINE (.+) #-}
+  (+.) = flip $ liftUnWs <$> flip (+.) <*> flip (+.)
+  {-# INLINE (+.) #-}
+  (.-) = liftUnWs <$> (.-) <*> (.-)
+  {-# INLINE (.-) #-}
+  (-.) = flip $ liftUnWs <$> flip (-.) <*> flip (-.)
+  {-# INLINE (-.) #-}
+  (/.) = flip $ liftUnWs <$> flip (/.) <*> flip (/.)
   {-# INLINE (/.) #-}
-  (Affine mat vec) >.< (Affine mat' vec') =
-    mat >.< mat' + vec >.< vec'
-  (Linear mat) >.< (Linear mat') = mat >.< mat'
-  Activate {} >.< Activate {} = 0
-  (BatchNorm m s w b) >.< (BatchNorm m' s' w' b') = m >.< m' + s >.< s' + w >.< w' + b >.< b'
+  AffW w b >.< AffW w' b' = w >.< w' + b >.< b'
+  LinW w >.< LinW w' = w >.< w'
+  ActW >.< ActW {} = 0
+  BatW w b >.< BatW w' b' = w >.< w' + b >.< b'
   {-# INLINE (>.<) #-}
-  sumS (Affine mat vec) = sumS mat + sumS vec
-  sumS (Linear mat) = sumS mat
-  sumS Activate {} = 0
-  sumS (BatchNorm m s w b) = sumS m + sumS s + sumS w + sumS b
+  sumS (AffW w b) = sumS w + sumS b
+  sumS (LinW w) = sumS w
+  sumS ActW = 0
+  sumS (BatW mu sigma) = sumS mu + sumS sigma
   {-# INLINE sumS #-}
 
-deriving instance (U.Unbox a, Show a) => Show (Layer l i o a)
+-- | Parameters updated by step-by-step, but not optimised by backprop.
+type RecParams :: LayerKind -> Nat -> Nat -> Type -> Type
+data RecParams l i o a where
+  AffRP :: RecParams 'Aff i o a
+  LinRP :: RecParams 'Lin i o a
+  ActRP :: !(SActivation act) -> RecParams ( 'Act act) i i a
+  BatRP :: {mean, deviation :: !(UVec i a)} -> RecParams 'BN i i a
 
-data Pass = Train | Eval
-  deriving (Show, Eq, Ord, Generic, Enum, Bounded)
+liftBinRP ::
+  (UVec o a -> UVec o a -> UVec o a) ->
+  RecParams l i o a ->
+  RecParams l i o a ->
+  RecParams l i o a
+{-# INLINE liftBinRP #-}
+liftBinRP _ l@AffRP AffRP {} = l
+liftBinRP _ l@LinRP LinRP {} = l
+liftBinRP _ l@(ActRP _) ActRP {} = l
+liftBinRP fV (BatRP mu sigma) (BatRP mu' sigma') =
+  BatRP (fV mu mu') (fV sigma sigma')
 
-affineMatL :: Lens' (Layer Aff i o a) (UMat i o a)
+liftUnRP ::
+  (UVec o a -> UVec o a) ->
+  RecParams l i o a ->
+  RecParams l i o a
+{-# INLINE liftUnRP #-}
+liftUnRP _ l@AffRP = l
+liftUnRP _ l@LinRP = l
+liftUnRP _ l@(ActRP _) = l
+liftUnRP fV (BatRP mu sigma) = BatRP (fV mu) (fV sigma)
+
+instance (KnownLayerKind l i o, U.Unbox a, Floating a) => Num (RecParams l i o a) where
+  (+) = liftBinRP (+)
+  {-# INLINE (+) #-}
+  (-) = liftBinRP (-)
+  {-# INLINE (-) #-}
+  (*) = liftBinRP (*)
+  {-# INLINE (*) #-}
+  abs = liftUnRP abs
+  {-# INLINE abs #-}
+  signum = liftUnRP signum
+  {-# INLINE signum #-}
+  fromInteger = reps . fromInteger
+  {-# INLINE fromInteger #-}
+  negate = liftUnRP negate
+  {-# INLINE negate #-}
+
+instance
+  (KnownLayerKind l i o, U.Unbox a, Floating a) =>
+  VectorSpace a (RecParams l i o a)
+  where
+  reps = case sLayerKind @l @i @o of
+    SAff -> const AffRP
+    SLin -> const LinRP
+    SAct sa -> const $ ActRP sa
+    SBN -> BatRP <$> reps <*> reps
+  {-# INLINE reps #-}
+  (.*) = liftUnRP <$> (.*)
+  {-# INLINE (.*) #-}
+  (*.) = flip $ liftUnRP <$> flip (*.)
+  {-# INLINE (*.) #-}
+  (.+) = liftUnRP <$> (.+)
+  {-# INLINE (.+) #-}
+  (+.) = flip $ liftUnRP <$> flip (+.)
+  {-# INLINE (+.) #-}
+  (.-) = liftUnRP <$> (.-)
+  {-# INLINE (.-) #-}
+  (-.) = flip $ liftUnRP <$> flip (-.)
+  {-# INLINE (-.) #-}
+  (/.) = flip $ liftUnRP <$> flip (/.)
+  {-# INLINE (/.) #-}
+  AffRP >.< AffRP {} = 0
+  LinRP >.< LinRP {} = 0
+  ActRP _ >.< ActRP {} = 0
+  BatRP mu sigma >.< BatRP mu' sigma' = mu >.< mu' + sigma >.< sigma'
+  {-# INLINE (>.<) #-}
+  sumS AffRP = 0
+  sumS LinRP = 0
+  sumS (ActRP _) = 0
+  sumS (BatRP mu sigma) = sumS mu + sumS sigma
+  {-# INLINE sumS #-}
+
+instance (KnownLayerKind l i o, U.Unbox a, Floating a) => Fractional (RecParams l i o a) where
+  fromRational = reps . fromRational
+  {-# INLINE fromRational #-}
+  recip = liftUnRP recip
+  {-# INLINE recip #-}
+  (/) = liftBinRP (/)
+  {-# INLINE (/) #-}
+
+instance
+  (KnownLayerKind l i o, U.Unbox a, Floating a) =>
+  Floating (RecParams l i o a)
+  where
+  pi = reps pi
+  {-# INLINE pi #-}
+  exp = liftUnRP exp
+  {-# INLINE exp #-}
+  log = liftUnRP log
+  {-# INLINE log #-}
+  sin = liftUnRP sin
+  {-# INLINE sin #-}
+  cos = liftUnRP cos
+  {-# INLINE cos #-}
+  tan = liftUnRP tan
+  {-# INLINE tan #-}
+  asin = liftUnRP asin
+  {-# INLINE asin #-}
+  acos = liftUnRP acos
+  {-# INLINE acos #-}
+  atan = liftUnRP atan
+  {-# INLINE atan #-}
+  sinh = liftUnRP sinh
+  {-# INLINE sinh #-}
+  cosh = liftUnRP cosh
+  {-# INLINE cosh #-}
+  tanh = liftUnRP tanh
+  {-# INLINE tanh #-}
+  asinh = liftUnRP asinh
+  {-# INLINE asinh #-}
+  acosh = liftUnRP acosh
+  {-# INLINE acosh #-}
+  atanh = liftUnRP atanh
+  {-# INLINE atanh #-}
+
+instance
+  ( KnownNat o
+  , U.Unbox a
+  , Floating a
+  ) =>
+  Backprop (RecParams l i o a)
+  where
+  zero = \case
+    l@AffRP -> l
+    l@LinRP -> l
+    l@(ActRP _) -> l
+    BatRP l r -> BatRP (zero l) (zero r)
+  one = \case
+    AffRP -> AffRP
+    LinRP -> LinRP
+    ActRP s -> ActRP s
+    BatRP l r -> BatRP (one l) (one r)
+  add l@AffRP AffRP {} = l
+  add l@LinRP LinRP {} = l
+  add l@(ActRP _) ActRP {} = l
+  add (BatRP mu sigma) (BatRP mu' sigma') =
+    BatRP (add mu mu') (add sigma sigma')
+  {-# INLINE add #-}
+
+instance (forall l x y. Semigroup (h l x y a)) => Semigroup (Network h i ls o a) where
+  Output <> Output = Output
+  (a :- as) <> (b :- bs) = (a <> b) :- (as <> bs)
+  {-# INLINE (<>) #-}
+
+affineMatL :: Lens' (Weights Aff i o a) (UMat i o a)
 {-# INLINE affineMatL #-}
-affineMatL = lens (\case (Affine mat _) -> mat) $
-  \case (Affine _ vec) -> (`Affine` vec)
+affineMatL = lens (\case (AffW mat _) -> mat) $
+  \case (AffW _ vec) -> (`AffW` vec)
 
-affineBiasL :: Lens' (Layer Aff i o a) (UVec o a)
+affineBiasL :: Lens' (Weights Aff i o a) (UVec o a)
 {-# INLINE affineBiasL #-}
-affineBiasL = lens (\case (Affine _ v) -> v) $
-  \case (Affine mat _) -> Affine mat
+affineBiasL = lens (\case (AffW _ v) -> v) $
+  \case (AffW mat _) -> AffW mat
 
-linearMatL :: Lens' (Layer Lin i o a) (UMat i o a)
+linearMatL :: Lens' (Weights Lin i o a) (UMat i o a)
 {-# INLINE linearMatL #-}
-linearMatL = lens (\case (Linear mat) -> mat) $ const Linear
+linearMatL = lens (\case (LinW mat) -> mat) $ const LinW
 
-data BatchLayer i a = BatchLayer {mean, deviation, scale, shift :: UVec i a}
+data BatchLayer i a = BatchLayer {scale, shift :: UVec i a}
   deriving (Show, Generic)
 
 deriving anyclass instance
   (KnownNat i, M.Numeric M.U a, U.Unbox a) => Backprop (BatchLayer i a)
 
-batchNormL :: Lens' (Layer BN i i a) (BatchLayer i a)
+batchNormL :: Lens' (Weights BN i i a) (BatchLayer i a)
 batchNormL =
   lens
-    ( \(BatchNorm mean deviation scale shift) ->
-        BatchLayer {..}
-    )
-    $ const $ \BatchLayer {..} ->
-      BatchNorm mean deviation scale shift
+    (\BatW {..} -> BatchLayer {..})
+    $ const $ \BatchLayer {..} -> BatW {..}
+
+data Pass = Train | Eval
+  deriving (Show, Eq, Ord, Generic, Bounded, Enum)
 
 runLayer ::
   forall s m l a i o.
   ( U.Unbox a
-  , KnownLayerKind l i o
+  , KnownNat i
+  , KnownNat o
   , KnownNat m -- batch size
   , RealFloat a
   , Backprop a
   , Reifies s W
   ) =>
   Pass ->
-  BVar s (Layer l i o a) ->
+  RecParams l i o a ->
+  BVar s (Weights l i o a) ->
   BVar s (UMat m i a) ->
-  BVar s (UMat m o a)
+  BVar s (UMat m o a, RecParams l i o a)
 {-# INLINE runLayer #-}
-runLayer pass = case sLayerKind @l @i @o of
-  SAff -> \aff x ->
+runLayer pass = \case
+  l@AffRP {} -> \aff x ->
     let w = aff ^^. affineMatL
         b = aff ^^. affineBiasL
-     in w !*!: x + duplicateAsCols' b
-  SLin -> \lin x ->
+     in T2 (w !*!: x + duplicateAsCols' b) (auto l)
+  l@LinRP -> \lin x ->
     let w = lin ^^. linearMatL
-     in w !*!: x
-  SAct a -> const $ applyActivatorBV a
-  SBN -> \lay ->
+     in T2 (w !*!: x) (auto l)
+  l@(ActRP a) -> const $ flip T2 (auto l) . applyActivatorBV a
+  l@BatRP {..} -> \lay ->
     let !bnParams = lay ^^. batchNormL
-        !mu = bnParams ^^. #mean
-        !sigma = bnParams ^^. #deviation
+        !mu = mean
+        !sigma = deviation
         !gamma = bnParams ^^. #scale
         !beta = bnParams ^^. #shift
      in case pass of
@@ -481,16 +603,22 @@ runLayer pass = case sLayerKind @l @i @o of
                 batchMu = sumRows' x /. m
                 xRel = x - duplicateAsCols' batchMu
                 batchSigma = sumRows' (xRel * xRel) /. m
-                ivar = recip $ sqrt $ batchSigma +. 1e-12
+                ivar = sqrt $ batchSigma +. 1e-12
                 gammax =
-                  duplicateAsCols' gamma * xRel * duplicateAsCols' ivar
-             in gammax + duplicateAsCols' beta
+                  duplicateAsCols' gamma * xRel / duplicateAsCols' ivar
+                bRP =
+                  isoVar2
+                    BatRP
+                    (\(BatRP z s) -> (z, s))
+                    batchMu
+                    batchSigma
+             in T2 (gammax + duplicateAsCols' beta) bRP
           Eval -> \x ->
             let eps = 1e-12
                 out1 =
-                  (x - duplicateAsCols' mu)
-                    / duplicateAsCols' (sqrt (sigma +. eps))
-             in duplicateAsCols' gamma * out1 + duplicateAsCols' beta
+                  (x - auto (computeM $ duplicateAsCols mu))
+                    / auto (computeM (duplicateAsCols (sqrt (sigma +. eps))))
+             in T2 (duplicateAsCols' gamma * out1 + duplicateAsCols' beta) (auto l)
 
 applyActivatorBV ::
   ( Reifies s W
@@ -504,38 +632,31 @@ applyActivatorBV ::
   SActivation act ->
   BVar s (Mat r n m a) ->
   BVar s (Mat r n m a)
-applyActivatorBV SReLU = liftOp1 $
-  op1 $ \mat ->
-    ( cmap (max 0) mat
-    , czipWith
-        ( \x d ->
-            if x < 0 then 0 else d
-        )
-        mat
-    )
+applyActivatorBV SReLU =
+  liftOp1 $
+    op1 (cmap (max 0) &&& czipWith (\x d -> if x < 0 then 0 else d))
 applyActivatorBV SSigmoid = sigmoid
 applyActivatorBV STanh = tanh
 applyActivatorBV SId = id
 
 -- | FIXME: defining on the case of @l@ would reduce runtime branching.
-instance (KnownNat i, KnownNat o, U.Unbox a, Num a) => Backprop (Layer l i o a) where
+instance (KnownNat i, KnownNat o, U.Unbox a, Num a) => Backprop (Weights l i o a) where
   zero = \case
-    Affine {} -> Affine 0 0
-    Linear {} -> Linear 0
-    l@Activate {} -> l
-    BatchNorm {} -> BatchNorm 0 0 0 0
+    AffW {} -> AffW 0 0
+    LinW {} -> LinW 0
+    l@ActW {} -> l
+    BatW {} -> BatW 0 0
   {-# INLINE zero #-}
   one = \case
-    Affine {} -> Affine 1 1
-    Linear {} -> Linear 1
-    l@Activate {} -> l
-    BatchNorm {} -> BatchNorm 1 1 1 1
+    AffW {} -> AffW 1 1
+    LinW {} -> LinW 1
+    l@ActW {} -> l
+    BatW {} -> BatW 1 1
   {-# INLINE one #-}
-  add (Affine mat vec) (Affine mat' vec') = Affine (add mat mat') (add vec vec')
-  add (Linear mat) (Linear mat') = Linear (add mat mat')
-  add l@Activate {} Activate {} = l
-  add (BatchNorm a b c d) (BatchNorm a' b' c' d') =
-    BatchNorm (a + a') (b + b') (c + c') (d + d')
+  add (AffW mat vec) (AffW mat' vec') = AffW (add mat mat') (add vec vec')
+  add (LinW mat) (LinW mat') = LinW (add mat mat')
+  add l@ActW {} ActW {} = l
+  add (BatW a b) (BatW a' b') = BatW (a + a') (b + b')
   {-# INLINE add #-}
 
 data Spec = L LayerKind Nat
@@ -560,15 +681,23 @@ data Network h i fs o a where
 
 infixr 9 :-
 
-type NeuralNetwork = Network Layer
+data NeuralNetwork i ls o a = NeuralNetwork
+  { recParams :: !(Network RecParams i ls o a)
+  , weights :: !(Network Weights i ls o a)
+  }
+  deriving (Generic)
 
 instance
-  (KnownNat i, KnownNat o, U.Unbox a, Num a, KnownNetwork i fs o) =>
-  Num (Network Layer i fs o a)
+  ( KnownNat i
+  , KnownNat o
+  , KnownNetwork i fs o
+  , forall l x y. KnownLayerKind l x y => Num (h l x y a)
+  ) =>
+  Num (Network h i fs o a)
   where
   fromInteger = go $ networkShape @i @fs @o
     where
-      go :: KnownNat l => NetworkShape l hs o -> Integer -> Network Layer l hs o a
+      go :: NetworkShape l hs o -> Integer -> Network h l hs o a
       {-# INLINE go #-}
       go IsOutput = pure Output
       go (IsCons rest) = (:-) <$> fromInteger <*> go rest
@@ -588,16 +717,16 @@ instance
 instance
   ( KnownNat i
   , KnownNat o
-  , U.Unbox a
   , Num a
   , KnownNetwork i fs o
   , Floating a
+  , forall l x y. (KnownLayerKind l x y, KnownNat x, KnownNat y) => VectorSpace a (h l x y a)
   ) =>
-  VectorSpace a (Network Layer i fs o a)
+  VectorSpace a (Network h i fs o a)
   where
   reps = go $ networkShape @i @fs @o
     where
-      go :: KnownNat l => NetworkShape l hs o -> a -> Network Layer l hs o a
+      go :: KnownNat l => NetworkShape l hs o -> a -> Network h l hs o a
       {-# INLINE go #-}
       go IsOutput = pure Output
       go (IsCons rest) = (:-) <$> reps <*> go rest
@@ -624,15 +753,14 @@ instance
 instance
   ( KnownNat i
   , KnownNat o
-  , U.Unbox a
-  , Floating a
   , KnownNetwork i fs o
+  , forall l x y. (KnownLayerKind l x y => Fractional (h l x y a))
   ) =>
-  Fractional (Network Layer i fs o a)
+  Fractional (Network h i fs o a)
   where
   fromRational = go $ networkShape @i @fs @o
     where
-      go :: KnownNat l => NetworkShape l hs o -> Rational -> Network Layer l hs o a
+      go :: NetworkShape l hs o -> Rational -> Network h l hs o a
       {-# INLINE go #-}
       go IsOutput = pure Output
       go (IsCons rest) = (:-) <$> fromRational <*> go rest
@@ -647,12 +775,13 @@ instance
   , U.Unbox a
   , Floating a
   , KnownNetwork i fs o
+  , forall l x y. (KnownLayerKind l x y => Floating (h l x y a))
   ) =>
-  Floating (Network Layer i fs o a)
+  Floating (Network h i fs o a)
   where
   pi = go $ networkShape @i @fs @o
     where
-      go :: KnownNat l => NetworkShape l hs o -> Network Layer l hs o a
+      go :: NetworkShape l hs o -> Network h l hs o a
       {-# INLINE go #-}
       go IsOutput = Output
       go (IsCons rest) = pi :- go rest
@@ -730,8 +859,9 @@ deriving anyclass instance
   , KnownNat i
   , KnownNat k
   , KnownNat o
+  , forall l' x y. (KnownNat x, KnownNat y) => Backprop (h l' x y a)
   ) =>
-  Backprop (TopLayerView Layer i l k xs o a)
+  Backprop (TopLayerView h i l k xs o a)
 
 topLayerL ::
   (KnownLayerKind l i k) =>
@@ -748,8 +878,9 @@ instance
   , KnownNat o
   , U.Unbox a
   , Num a
+  , (forall l x y. ((KnownNat x, KnownNat y) => Backprop (h l x y a)))
   ) =>
-  Backprop (Network Layer i ls o a)
+  Backprop (Network h i ls o a)
   where
   zero Output = Output
   zero (h :- hs) = zero h :- zero hs
@@ -764,28 +895,41 @@ runNN ::
   , U.Unbox a
   , RealFloat a
   , Backprop a
+  , KnownNat i
+  , KnownNat o
   , Reifies s W
-  , KnownNetwork i hs o
   ) =>
   Pass ->
-  BVar s (NeuralNetwork i hs o a) ->
+  Network RecParams i hs o a ->
+  BVar s (Network Weights i hs o a) ->
   BVar s (UMat m i a) ->
-  BVar s (UMat m o a)
+  BVar s (UMat m o a, Network RecParams i hs o a)
 {-# INLINE runNN #-}
-runNN pass = go $ networkShape @i @hs @o
+runNN pass = go
   where
     go ::
       forall h ls.
       (KnownNat h) =>
-      NetworkShape h ls o ->
-      BVar s (NeuralNetwork h ls o a) ->
+      Network RecParams h ls o a ->
+      BVar s (Network Weights h ls o a) ->
       BVar s (UMat m h a) ->
-      BVar s (UMat m o a)
+      BVar s (UMat m o a, Network RecParams h ls o a)
     {-# INLINE go #-}
-    go IsOutput _ = id
-    go (IsCons rest) lay =
+    go Output _ = flip T2 (auto Output)
+    go (ps :- restPs) lay = \x ->
       let !decons = lay ^^. topLayerL
-       in go rest (decons ^^. #continue) . runLayer pass (decons ^^. #topLayer)
+          !top = decons ^^. #topLayer
+          !vLays' = runLayer pass ps top x
+          !passed = go restPs (decons ^^. #continue) (vLays' ^^. _1)
+          !v' = passed ^^. _1
+          !rest' = passed ^^. _2
+       in T2 v' (isoVar2 (:-) (\(a :- b) -> (a, b)) (vLays' ^^. _2) rest')
+
+curryNN ::
+  (Network RecParams i ls o a -> Network Weights i ls o a -> r) ->
+  NeuralNetwork i ls o a ->
+  r
+curryNN f = f <$> recParams <*> weights
 
 evalBatchNN ::
   ( KnownNat m
@@ -798,7 +942,8 @@ evalBatchNN ::
   UMat m i a ->
   UMat m o a
 {-# INLINE evalBatchNN #-}
-evalBatchNN = evalBP2 $ runNN Eval
+evalBatchNN = curryNN $ \ps ->
+  evalBP2 (fmap (viewVar _1) . runNN Eval ps)
 
 -- | The variant of 'evalBatchNN' with functorial inputs and outputs.
 evalBatchF ::
@@ -833,9 +978,11 @@ withKnownNetwork ::
   ) ->
   NeuralNetwork i hs o a ->
   r
-withKnownNetwork f Output = f Output
-withKnownNetwork f (la :- net) =
-  withKnownNetwork (f . (la :-)) net
+withKnownNetwork f i@(NeuralNetwork Output Output) = f i
+withKnownNetwork f (NeuralNetwork (ps :- pss) (ws :- wss)) =
+  withKnownNetwork
+    (curryNN $ \ps' ws' -> f $ NeuralNetwork (ps :- ps') (ws :- ws'))
+    (NeuralNetwork pss wss)
 
 evalNN ::
   ( KnownNat i
@@ -995,26 +1142,23 @@ gradNN ::
   , KnownNat m
   , U.Unbox a
   , Backprop a
-  , KnownNetwork i ls o
+  , KnownNat i
+  , KnownNat o
   ) =>
   -- | Loss function
   LossFunction m o a ->
   (UMat m i a, UMat m o a) ->
-  NeuralNetwork i ls o a ->
-  GradStack i ls o a
-gradNN loss (inps, oups) =
-  toGradientStack
-    . gradBP (\net -> loss (runNN Train net (auto inps)) (auto oups))
-
--- | O(1)
-toGradientStack :: NeuralNetwork i ls o a -> GradStack i ls o a
-{-# INLINE toGradientStack #-}
-toGradientStack = coerce
-
--- | O(1)
-fromGradientStack :: GradStack i ls o a -> NeuralNetwork i ls o a
-{-# INLINE fromGradientStack #-}
-fromGradientStack = coerce
+  Network RecParams i ls o a ->
+  Network Weights i ls o a ->
+  (Network Weights i ls o a, Network RecParams i ls o a)
+gradNN loss (inps, oups) recPs =
+  bimap ($ (1, zero recPs)) snd
+    . swap
+    . backpropWith
+      ( \net ->
+          let ysRecs' = runNN Train recPs net (auto inps)
+           in T2 (loss (ysRecs' ^^. _1) (auto oups)) (ysRecs' ^^. _2)
+      )
 
 crossEntropy ::
   forall o m a k.
@@ -1043,6 +1187,9 @@ trainGDF ::
   , Backprop a
   ) =>
   RealFloat a =>
+  -- | Learning rate (dt)
+  a ->
+  -- | Dumping factor for batchnorm
   a ->
   Int ->
   (forall m. KnownNat m => LossFunction m (Size o) a) ->
@@ -1050,11 +1197,11 @@ trainGDF ::
   NeuralNetwork (Size i) hs (Size o) a ->
   NeuralNetwork (Size i) hs (Size o) a
 {-# INLINE trainGDF #-}
-trainGDF gamma n loss dataSet =
+trainGDF gamma alpha n loss dataSet =
   case fromBatchData $ pairUV dataSet of
     MkSomeBatch umats ->
       let (ins, ous) = splitRowAt @(Size i) @(Size o) umats
-       in trainGD gamma n loss (computeM ins, computeM ous)
+       in trainGD gamma alpha n loss (computeM ins, computeM ous)
 
 pairUV ::
   U.Vector (i a, o a) ->
@@ -1068,15 +1215,18 @@ trainGD ::
   , KnownNat i
   ) =>
   RealFloat a =>
+  -- | Learning rate (dt)
+  a ->
+  -- | Dumping factor for batchnorm
   a ->
   Int ->
   LossFunction m o a ->
   (UMat m i a, UMat m o a) ->
   NeuralNetwork i hs o a ->
   NeuralNetwork i hs o a
-trainGD gamma n loss dataSet =
+trainGD gamma alpha n loss dataSet =
   withKnownNetwork $
-    trainGD_ gamma n loss dataSet
+    trainGD_ gamma alpha n loss dataSet
 
 trainGD_ ::
   ( KnownNat m
@@ -1085,16 +1235,20 @@ trainGD_ ::
   , KnownNetwork i hs o
   ) =>
   RealFloat a =>
+  -- | Learning rate (dt)
+  a ->
+  -- | Dumping factor for batchnorm
   a ->
   Int ->
   LossFunction m o a ->
   (UMat m i a, UMat m o a) ->
   NeuralNetwork i hs o a ->
   NeuralNetwork i hs o a
-trainGD_ gamma n loss dataSet = last . take n . iterate' step
+trainGD_ gamma alpha n loss dataSet = last . take n . iterate' step
   where
-    step net =
-      net - gamma .* fromGradientStack (gradNN loss dataSet net)
+    step (NeuralNetwork ps ws) =
+      let (ws', ps') = gradNN loss dataSet ps ws
+       in NeuralNetwork (alpha .* ps' + (1 - alpha) .* ps) (ws - gamma .* ws')
 
 data AdamParams a = AdamParams {beta1, beta2, epsilon :: !a}
   deriving (Show, Eq, Ord, Generic)
@@ -1110,7 +1264,9 @@ trainAdamF ::
   , U.Unbox (o a)
   ) =>
   RealFloat a =>
-  -- | Learning Rate
+  -- | Learning rate (dt)
+  a ->
+  -- | Dumping factor for batchnorm
   a ->
   AdamParams a ->
   Int ->
@@ -1118,11 +1274,11 @@ trainAdamF ::
   U.Vector (i a, o a) ->
   NeuralNetwork (Size i) hs (Size o) a ->
   NeuralNetwork (Size i) hs (Size o) a
-trainAdamF gamma ap n loss dataSet =
+trainAdamF gamma alpha ap n loss dataSet =
   case fromBatchData $ pairUV dataSet of
     MkSomeBatch umats ->
       let (ins, ous) = splitRowAt @(Size i) @(Size o) umats
-       in trainAdam gamma ap n loss (computeM ins, computeM ous)
+       in trainAdam gamma alpha ap n loss (computeM ins, computeM ous)
 
 trainAdam ::
   forall m i hs o a.
@@ -1132,7 +1288,9 @@ trainAdam ::
   , KnownNat i
   ) =>
   RealFloat a =>
-  -- | Learning Rate
+  -- | Learning rate (dt)
+  a ->
+  -- | Dumping factor for batchnorm
   a ->
   AdamParams a ->
   Int ->
@@ -1140,9 +1298,9 @@ trainAdam ::
   (UMat m i a, UMat m o a) ->
   NeuralNetwork i hs o a ->
   NeuralNetwork i hs o a
-trainAdam gamma ap n loss dataSet =
+trainAdam gamma alpha ap n loss dataSet =
   withKnownNetwork $
-    trainAdam_ gamma ap n loss dataSet
+    trainAdam_ gamma alpha ap n loss dataSet
 
 trainAdam_ ::
   forall m i hs o a.
@@ -1152,7 +1310,9 @@ trainAdam_ ::
   , Backprop a
   ) =>
   RealFloat a =>
-  -- | Learning Rate
+  -- | Learning Rate (dt)
+  a ->
+  -- | Dumping factor
   a ->
   AdamParams a ->
   Int ->
@@ -1160,15 +1320,16 @@ trainAdam_ ::
   (UMat m i a, UMat m o a) ->
   NeuralNetwork i hs o a ->
   NeuralNetwork i hs o a
-trainAdam_ gamma AdamParams {..} n loss dataSet =
+trainAdam_ gamma alpha AdamParams {..} n loss dataSet =
   SP.fst . last . take n . iterate' step . (:!: (0 :!: 0))
   where
-    step (net :!: (s :!: v)) =
-      let dW = fromGradientStack $ gradNN loss dataSet net
+    step ((NeuralNetwork ps net) :!: (s :!: v)) =
+      let (dW, ps') = gradNN loss dataSet ps net
           sN = beta2 .* s + (1 - beta2) .* (dW * dW)
           vN = beta1 .* v + (1 - beta1) .* dW
           net' = net - (gamma .* vN) / sqrt (sN +. epsilon)
-       in net' :!: (sN :!: vN)
+          ps'' = alpha .* ps' + (1 - alpha) .* ps
+       in NeuralNetwork ps'' net' :!: (sN :!: vN)
 
 randomNetwork ::
   ( RandomGenM g r m
@@ -1178,21 +1339,22 @@ randomNetwork ::
   g ->
   Network LayerSpec i ls o Double ->
   m (NeuralNetwork i ls o Double)
-randomNetwork g = htraverseNetwork $ \case
-  (AffP s :: LayerSpec _ i _ _) -> do
-    ws <- replicateMatA $ normal 0.0 s g
-    bs <- replicateVecA $ standard g
-    pure $ Affine ws bs
-  (LinP s :: LayerSpec _ i _ _) -> do
-    ws <- replicateMatA $ normal 0.0 s g
-    pure $ Linear ws
-  (ActP :: LayerSpec _ _ _ _) -> pure $ Activate sActivation
-  (BNP s :: LayerSpec _ i _ _) -> do
-    sigma <- replicateVecA $ normal 0.0 s g
-    mu <- replicateVecA $ normal 0.0 s g
-    w <- replicateVecA $ normal 0.0 s g
-    b <- replicateVecA $ normal 0.0 s g
-    pure $ BatchNorm sigma mu w b
+randomNetwork g =
+  liftA2 NeuralNetwork
+    <$> htraverseNetwork \case
+      (AffP _ :: LayerSpec _ i _ _) -> pure AffRP
+      (LinP _ :: LayerSpec _ i _ _) -> pure LinRP
+      (ActP :: LayerSpec _ _ _ _) -> pure $ ActRP sActivation
+      (BNP :: LayerSpec _ i _ _) -> pure $ BatRP 0 1
+    <*> htraverseNetwork \case
+      (AffP s :: LayerSpec _ i _ _) -> do
+        ws <- replicateMatA $ normal 0.0 s g
+        pure $ AffW ws 0.0
+      (LinP s :: LayerSpec _ i _ _) -> do
+        ws <- replicateMatA $ normal 0.0 s g
+        pure $ LinW ws
+      (ActP :: LayerSpec _ _ _ _) -> pure ActW
+      (BNP :: LayerSpec _ i _ _) -> pure $ BatW 1 0
 
 data SomeNetwork h i o a where
   MkSomeNetwork :: Network h i hs o a -> SomeNetwork h i o a
@@ -1241,21 +1403,22 @@ data LayerInfo = AffL !Int | LinL !Int | ActL Activation | BatchL !Int
   deriving (Show, Eq, Ord, Generic)
 
 networkStat :: KnownNat i => NeuralNetwork i hs o a -> NetworkStat
-networkStat = foldMapNetwork $ \case
-  (Affine {} :: Layer _ i o a) ->
-    NetworkStat
-      { parameters = Sum $ dimVal @i * dimVal @o + dimVal @o
-      , layers = DL.singleton $ AffL $ dimVal @o
-      }
-  (Linear {} :: Layer _ i o a) ->
-    NetworkStat
-      { parameters = Sum $ dimVal @i * dimVal @o
-      , layers = DL.singleton $ LinL $ dimVal @o
-      }
-  (Activate sact :: Layer _ i o a) ->
-    mempty {layers = DL.singleton $ ActL $ activationVal sact}
-  (BatchNorm {} :: Layer _ i o a) ->
-    NetworkStat
-      { parameters = Sum $ 4 * dimVal @o
-      , layers = DL.singleton $ BatchL $ dimVal @o
-      }
+networkStat =
+  recParams >>> foldMapNetwork \case
+    (AffRP {} :: RecParams _ i o a) ->
+      NetworkStat
+        { parameters = Sum $ dimVal @i * dimVal @o + dimVal @o
+        , layers = DL.singleton $ AffL $ dimVal @o
+        }
+    (LinRP {} :: RecParams _ i o a) ->
+      NetworkStat
+        { parameters = Sum $ dimVal @i * dimVal @o
+        , layers = DL.singleton $ LinL $ dimVal @o
+        }
+    (ActRP sact :: RecParams _ i o a) ->
+      mempty {layers = DL.singleton $ ActL $ activationVal sact}
+    (BatRP {} :: RecParams _ i o a) ->
+      NetworkStat
+        { parameters = Sum $ 4 * dimVal @o
+        , layers = DL.singleton $ BatchL $ dimVal @o
+        }

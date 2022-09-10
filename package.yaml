@@ -54,8 +54,10 @@ dependencies:
 - sized
 - split
 - strict
+- semigroupoids
 - subcategories
 - these
+- transformers
 - vector
 - vector-th-unbox
 
@@ -86,6 +88,17 @@ executables:
   circles:
     main:         Main.hs
     source-dirs:  app/circles
+    ghc-options:
+    - -O2
+    - -threaded
+    - -with-rtsopts=-N
+    dependencies: 
+    - dl-first-principle-tutorial
+    - optparse-applicative
+    - time
+  spirals-batchnorm:
+    main:         Main.hs
+    source-dirs:  app/spirals-batchnorm
     ghc-options:
     - -O2
     - -threaded
