@@ -26,16 +26,19 @@ source-repository head
 library
   exposed-modules:
       Control.Subcategory.Linear
+      Data.Format.MNIST
       Data.Format.SpaceSeparated
       Data.Vector.Orphans
       DeepLearning.Circles
       DeepLearning.Circles.Types
       DeepLearning.Iris
+      DeepLearning.MNIST
       DeepLearning.NeuralNetowrk.HigherKinded
       DeepLearning.NeuralNetowrk.Massiv
       Numeric.Function.Activation
       Numeric.Optimisation
       Numeric.VectorSpace
+      Streaming.Shuffle
   other-modules:
       Paths_dl_first_principle_tutorial
   hs-source-dirs:
@@ -44,6 +47,8 @@ library
   build-depends:
       ad
     , adjunctions
+    , attoparsec
+    , attoparsec-binary
     , backprop
     , base >=4.7 && <5
     , bitvec
@@ -64,22 +69,30 @@ library
     , generic-lens
     , ghc-typelits-knownnat
     , ghc-typelits-presburger
+    , hybrid-vectors
     , lens
     , linear
     , massiv
     , massiv-io
+    , massiv-persist
     , matrix
     , mwc-random
+    , persist
     , random
     , reflection
+    , resourcet
     , semigroupoids
     , sized
     , split
+    , streaming
+    , streaming-attoparsec
+    , streaming-bytestring
     , strict
     , subcategories
     , these
     , transformers
     , type-natural
+    , unliftio
     , vector
     , vector-th-unbox
   default-language: Haskell2010
@@ -94,6 +107,8 @@ executable circles
   build-depends:
       ad
     , adjunctions
+    , attoparsec
+    , attoparsec-binary
     , backprop
     , base >=4.7 && <5
     , bitvec
@@ -115,24 +130,32 @@ executable circles
     , generic-lens
     , ghc-typelits-knownnat
     , ghc-typelits-presburger
+    , hybrid-vectors
     , lens
     , linear
     , massiv
     , massiv-io
+    , massiv-persist
     , matrix
     , mwc-random
     , optparse-applicative
+    , persist
     , random
     , reflection
+    , resourcet
     , semigroupoids
     , sized
     , split
+    , streaming
+    , streaming-attoparsec
+    , streaming-bytestring
     , strict
     , subcategories
     , these
     , time
     , transformers
     , type-natural
+    , unliftio
     , vector
     , vector-th-unbox
   default-language: Haskell2010
@@ -147,6 +170,8 @@ executable iris
   build-depends:
       ad
     , adjunctions
+    , attoparsec
+    , attoparsec-binary
     , backprop
     , base >=4.7 && <5
     , bitvec
@@ -168,23 +193,94 @@ executable iris
     , generic-lens
     , ghc-typelits-knownnat
     , ghc-typelits-presburger
+    , hybrid-vectors
     , lens
     , linear
     , massiv
     , massiv-io
+    , massiv-persist
     , matrix
     , mwc-random
     , optparse-applicative
+    , persist
     , random
     , reflection
+    , resourcet
     , semigroupoids
     , sized
     , split
+    , streaming
+    , streaming-attoparsec
+    , streaming-bytestring
     , strict
     , subcategories
     , these
     , transformers
     , type-natural
+    , unliftio
+    , vector
+    , vector-th-unbox
+  default-language: Haskell2010
+
+executable mnist
+  main-is: Main.hs
+  other-modules:
+      Paths_dl_first_principle_tutorial
+  hs-source-dirs:
+      app/mnist
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -fsimpl-tick-factor=1000 -O2 -threaded -with-rtsopts=-N
+  build-depends:
+      ad
+    , adjunctions
+    , attoparsec
+    , attoparsec-binary
+    , backprop
+    , base >=4.7 && <5
+    , bitvec
+    , bytestring
+    , cassava
+    , deepseq
+    , diagrams-core
+    , diagrams-lib
+    , diagrams-rasterific
+    , diagrams-svg
+    , directory
+    , distributive
+    , dl-first-principle-tutorial
+    , dlist
+    , equational-reasoning
+    , filepath
+    , foldl
+    , generic-data
+    , generic-lens
+    , ghc-typelits-knownnat
+    , ghc-typelits-presburger
+    , hybrid-vectors
+    , lens
+    , linear
+    , massiv
+    , massiv-io
+    , massiv-persist
+    , matrix
+    , mwc-random
+    , optparse-applicative
+    , persist
+    , random
+    , reflection
+    , resourcet
+    , semigroupoids
+    , sized
+    , split
+    , streaming
+    , streaming-attoparsec
+    , streaming-bytestring
+    , strict
+    , subcategories
+    , these
+    , time
+    , transformers
+    , type-natural
+    , unliftio
     , vector
     , vector-th-unbox
   default-language: Haskell2010
@@ -199,6 +295,8 @@ executable spirals-batchnorm
   build-depends:
       ad
     , adjunctions
+    , attoparsec
+    , attoparsec-binary
     , backprop
     , base >=4.7 && <5
     , bitvec
@@ -220,24 +318,32 @@ executable spirals-batchnorm
     , generic-lens
     , ghc-typelits-knownnat
     , ghc-typelits-presburger
+    , hybrid-vectors
     , lens
     , linear
     , massiv
     , massiv-io
+    , massiv-persist
     , matrix
     , mwc-random
     , optparse-applicative
+    , persist
     , random
     , reflection
+    , resourcet
     , semigroupoids
     , sized
     , split
+    , streaming
+    , streaming-attoparsec
+    , streaming-bytestring
     , strict
     , subcategories
     , these
     , time
     , transformers
     , type-natural
+    , unliftio
     , vector
     , vector-th-unbox
   default-language: Haskell2010

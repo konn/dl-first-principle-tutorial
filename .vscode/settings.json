@@ -1,0 +1,3 @@
+{
+  "haskell.plugin.rename.config.crossModule": true
+}

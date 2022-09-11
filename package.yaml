@@ -23,6 +23,8 @@ dependencies:
 - base >= 4.7 && < 5
 - ad
 - adjunctions
+- attoparsec
+- attoparsec-binary
 - backprop
 - bitvec
 - bytestring
@@ -42,22 +44,30 @@ dependencies:
 - generic-lens
 - ghc-typelits-knownnat
 - ghc-typelits-presburger
-- type-natural
+- hybrid-vectors
 - lens
 - linear
 - massiv
 - massiv-io
+- massiv-persist
 - matrix
 - mwc-random
+- persist
 - random
 - reflection
+- resourcet
+- semigroupoids
 - sized
 - split
+- streaming
+- streaming-attoparsec
+- streaming-bytestring
 - strict
-- semigroupoids
 - subcategories
 - these
 - transformers
+- type-natural
+- unliftio
 - vector
 - vector-th-unbox
 
@@ -85,6 +95,7 @@ executables:
     dependencies: 
     - dl-first-principle-tutorial
     - optparse-applicative
+
   circles:
     main:         Main.hs
     source-dirs:  app/circles
@@ -96,9 +107,22 @@ executables:
     - dl-first-principle-tutorial
     - optparse-applicative
     - time
+
   spirals-batchnorm:
     main:         Main.hs
     source-dirs:  app/spirals-batchnorm
+    ghc-options:
+    - -O2
+    - -threaded
+    - -with-rtsopts=-N
+    dependencies: 
+    - dl-first-principle-tutorial
+    - optparse-applicative
+    - time
+
+  mnist:
+    main:         Main.hs
+    source-dirs:  app/mnist
     ghc-options:
     - -O2
     - -threaded

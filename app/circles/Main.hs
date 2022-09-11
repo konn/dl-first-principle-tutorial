@@ -38,7 +38,7 @@ import Data.Strict (Pair (..))
 import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.Circles
-import DeepLearning.NeuralNetowrk.Massiv
+import DeepLearning.NeuralNetowrk.Massiv hiding (scale)
 import Diagrams.Backend.Rasterific
 import Diagrams.Prelude (Diagram, alignB, alignT, bg, black, blend, centerXY, fc, green, lc, mkHeight, orange, p2, pad, scale, strokeOpacity, white, (===), (|||))
 import qualified Diagrams.Prelude as Dia

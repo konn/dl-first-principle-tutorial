@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DefaultSignatures #-}
@@ -25,6 +26,7 @@
 
 module Control.Subcategory.Linear
   ( Vec (),
+    unsafeToVec,
     unVec,
     type UVec,
     type Vec1,
@@ -51,6 +53,7 @@ module Control.Subcategory.Linear
 
     -- ** Matrix operations
     Mat (),
+    unsafeToMat,
     unMat,
     SomeBatch (..),
     splitColAt,
@@ -111,23 +114,28 @@ module Control.Subcategory.Linear
   )
 where
 
+import Control.DeepSeq (NFData)
 import Control.Monad.ST
 import Control.Subcategory
 import qualified Data.Bifunctor as Bi
 import Data.Coerce
 import Data.Function (on)
 import Data.Functor.Product (Product)
+import Data.Massiv.Array (Sz (..))
 import qualified Data.Massiv.Array as M
 import qualified Data.Massiv.Array.Manifest.Vector as VM
 import qualified Data.Massiv.Core.Operations as M
+import Data.Persist
 import Data.Proxy (Proxy)
 import Data.Sized (Sized, unsized)
 import Data.Strict (Pair (..), type (:!:))
+import qualified Data.Strict as SP
 import qualified Data.Strict as St
 import Data.These (These (..))
 import Data.Type.Natural
 import qualified Data.Vector as V
 import qualified Data.Vector.Generic as G
+import qualified Data.Vector.Generic.Mutable as MG
 import qualified Data.Vector.Unboxed as U
 import qualified Data.Vector.Unboxed.Mutable as MU
 import GHC.Base
@@ -135,6 +143,7 @@ import GHC.Generics hiding (V1)
 import qualified Linear
 import Linear.Affine (Point (..))
 import qualified Linear.V as LinearV
+import Massiv.Persist
 import Numeric.Backprop
 import Numeric.VectorSpace
 
@@ -529,6 +538,14 @@ type Vec4 = UVec 4
 newtype Vec r n a = Vec {runVec :: M.Vector r a}
   deriving (Generic)
 
+unsafeToVec :: forall n r a. M.Vector r a -> Vec r n a
+{-# INLINE unsafeToVec #-}
+unsafeToVec = Vec
+
+deriving newtype instance
+  NFData (M.Vector r a) =>
+  NFData (Vec r n a)
+
 {-# INLINE unVec #-}
 unVec :: Vec r n a -> M.Array r M.Ix1 a
 unVec = runVec
@@ -539,8 +556,6 @@ instance Constrained (Vec r n) where
   type
     Dom (Vec r n) a =
       ( M.Load r M.Ix1 a
-      , M.FoldNumeric r a
-      , M.NumericFloat r a
       , M.Manifest r a
       )
 
@@ -551,10 +566,25 @@ instance KnownNat n => HasSize (Vec M.U n) where
   sinkToVector mv = U.copy mv . M.toUnboxedVector . runVec
   {-# INLINE sinkToVector #-}
 
+instance (KnownNat n, KnownNat m) => HasSize (Mat M.U n m) where
+  type Size (Mat M.U n m) = m * n
+  toVec = Vec . M.resize' (Sz1 (dimVal @m * dimVal @n)) . runMat
+  {-# INLINE toVec #-}
+  sinkToVector mv = U.copy mv . M.toUnboxedVector . runMat
+  {-# INLINE sinkToVector #-}
+
 type UMat = Mat M.U
 
 newtype Mat r (n :: Nat) (m :: Nat) a = Mat {runMat :: M.Array r M.Ix2 a}
   deriving (Generic, Generic1)
+
+unsafeToMat :: forall n m r a. M.Matrix r a -> Mat r n m a
+{-# INLINE unsafeToMat #-}
+unsafeToMat = Mat
+
+deriving newtype instance
+  NFData (M.Matrix r a) =>
+  NFData (Mat r n m a)
 
 unMat :: Mat r n m a -> M.Array r M.Ix2 a
 {-# INLINE unMat #-}
@@ -565,7 +595,7 @@ deriving instance Show (M.Array r M.Ix2 a) => Show (Mat r n m a)
 deriving instance Show (M.Array r M.Ix1 a) => Show (Vec r n a)
 
 instance Constrained (Mat r n m) where
-  type Dom (Mat r n m) a = (M.Load r M.Ix2 a, M.FoldNumeric r a, M.NumericFloat r a, M.Manifest r a)
+  type Dom (Mat r n m) a = (M.Load r M.Ix2 a, M.Manifest r a)
 
 instance CFunctor (Mat r n m) where
   cmap f (Mat arr) = Mat $ M.computeP $ M.map f arr
@@ -842,6 +872,21 @@ deriving anyclass instance HasSize Linear.V3
 
 deriving anyclass instance HasSize Linear.V4
 
+instance KnownNat n => FromVec (UVec n) where
+  fromVec = id
+  {-# INLINE fromVec #-}
+  decodeFrom =
+    Bi.first (Vec . M.fromUnboxedVector M.Par)
+      . SP.toStrict
+      . U.splitAt (dimVal @n)
+  {-# INLINE decodeFrom #-}
+
+instance (KnownNat n, KnownNat m) => FromVec (UMat n m) where
+  fromVec = Mat . M.resize' (Sz2 (dimVal @m) (dimVal @n)) . runVec
+  {-# INLINE fromVec #-}
+  decodeFrom = Bi.first fromVec . decodeFrom
+  {-# INLINE decodeFrom #-}
+
 instance KnownNat n => HasSize (LinearV.V n) where
   type Size (LinearV.V n) = n
   toVec = Vec . VM.fromVector' M.Par (M.Sz1 $ dimVal @n) . LinearV.toVector
@@ -1020,6 +1065,95 @@ fromBatchData ts =
           M.computeP $
             M.concat' 1 $ V.map (runMat . asColumn . toVec) $ G.convert ts
 
+newtype instance U.Vector (UVec n a) = Vector_UVec {getUVecVector :: U.Vector a}
+
+newtype instance U.MVector s (UVec n a) = MVector_UVec {getUVecMVector :: U.MVector s a}
+
+instance (KnownNat n, U.Unbox a) => G.Vector U.Vector (UVec n a) where
+  basicUnsafeFreeze = fmap Vector_UVec . G.basicUnsafeFreeze . getUVecMVector
+  {-# INLINE basicUnsafeFreeze #-}
+  basicUnsafeThaw = fmap MVector_UVec . G.basicUnsafeThaw . getUVecVector
+  {-# INLINE basicUnsafeThaw #-}
+  basicLength = (`quot` dimVal @n) . G.basicLength . getUVecVector
+  {-# INLINE basicLength #-}
+  basicUnsafeSlice = coerce (G.basicUnsafeSlice @U.Vector @a `on` (dimVal @n *))
+  {-# INLINE basicUnsafeSlice #-}
+  basicUnsafeIndexM (Vector_UVec raw) i =
+    pure $
+      Vec $
+        M.fromUnboxedVector M.Par $
+          U.unsafeSlice (i * dimVal @n) (dimVal @n) raw
+  {-# INLINE basicUnsafeIndexM #-}
+
+instance (KnownNat n, U.Unbox a) => MG.MVector U.MVector (UVec n a) where
+  basicLength = (`quot` dimVal @n) . MG.basicLength . getUVecMVector
+  {-# INLINE basicLength #-}
+  basicUnsafeSlice = coerce (MG.basicUnsafeSlice @U.MVector @a `on` (dimVal @n *))
+  {-# INLINE basicUnsafeSlice #-}
+  basicOverlaps = coerce $ MG.overlaps @U.MVector @a
+  {-# INLINE basicOverlaps #-}
+  basicUnsafeNew = fmap MVector_UVec . MG.basicUnsafeNew . (dimVal @n *)
+  {-# INLINE basicUnsafeNew #-}
+  basicInitialize = MG.basicInitialize . getUVecMVector
+  {-# INLINE basicInitialize #-}
+  basicUnsafeRead (MVector_UVec raw) i =
+    Vec . M.fromUnboxedVector M.Par
+      <$> G.freeze
+        (MG.unsafeSlice (dimVal @n * i) (dimVal @n) raw)
+  {-# INLINE basicUnsafeRead #-}
+  basicUnsafeWrite (MVector_UVec raw) i (Vec vec) =
+    G.unsafeCopy (MG.unsafeSlice (dimVal @n * i) (dimVal @n) raw) $
+      M.toUnboxedVector vec
+  {-# INLINE basicUnsafeWrite #-}
+
+instance (KnownNat n, U.Unbox a) => U.Unbox (UVec n a)
+
+newtype instance U.Vector (UMat n m a) = Vector_UMat {getUMatVector :: U.Vector a}
+
+newtype instance U.MVector s (UMat n m a) = MVector_UMat {getUMatMVector :: U.MVector s a}
+
+instance (KnownNat n, KnownNat m, U.Unbox a) => G.Vector U.Vector (UMat n m a) where
+  basicUnsafeFreeze = fmap Vector_UMat . G.basicUnsafeFreeze . getUMatMVector
+  {-# INLINE basicUnsafeFreeze #-}
+  basicUnsafeThaw = fmap MVector_UMat . G.basicUnsafeThaw . getUMatVector
+  {-# INLINE basicUnsafeThaw #-}
+  basicLength = (`quot` (dimVal @(m * n))) . G.basicLength . getUMatVector
+  {-# INLINE basicLength #-}
+  basicUnsafeSlice =
+    coerce
+      (G.basicUnsafeSlice @U.Vector @a `on` (dimVal @(m * n) *))
+  {-# INLINE basicUnsafeSlice #-}
+  basicUnsafeIndexM (Vector_UMat raw) i =
+    pure $
+      Mat $
+        M.resize' (Sz2 (dimVal @m) (dimVal @n)) $
+          M.fromUnboxedVector M.Par $
+            U.unsafeSlice (i * dimVal @(m * n)) (dimVal @(m * n)) raw
+  {-# INLINE basicUnsafeIndexM #-}
+
+instance (KnownNat n, KnownNat m, U.Unbox a) => MG.MVector U.MVector (UMat n m a) where
+  basicLength = (`quot` dimVal @(n * m)) . MG.basicLength . getUMatMVector
+  {-# INLINE basicLength #-}
+  basicUnsafeSlice = coerce (MG.basicUnsafeSlice @U.MVector @a `on` (dimVal @(m * n) *))
+  {-# INLINE basicUnsafeSlice #-}
+  basicOverlaps = coerce $ MG.overlaps @U.MVector @a
+  {-# INLINE basicOverlaps #-}
+  basicUnsafeNew = fmap MVector_UMat . MG.basicUnsafeNew . (dimVal @(m * n) *)
+  {-# INLINE basicUnsafeNew #-}
+  basicInitialize = MG.basicInitialize . getUMatMVector
+  {-# INLINE basicInitialize #-}
+  basicUnsafeRead (MVector_UMat raw) i =
+    Mat . M.resize' (Sz2 (dimVal @m) (dimVal @n)) . M.fromUnboxedVector M.Par
+      <$> G.freeze
+        (MG.unsafeSlice (dimVal @(m * n) * i) (dimVal @(m * n)) raw)
+  {-# INLINE basicUnsafeRead #-}
+  basicUnsafeWrite (MVector_UMat raw) i (Mat vec) =
+    G.unsafeCopy (MG.unsafeSlice (dimVal @(m * n) * i) (dimVal @(m * n)) raw) $
+      M.toUnboxedVector vec
+  {-# INLINE basicUnsafeWrite #-}
+
+instance (KnownNat n, KnownNat m, U.Unbox a) => U.Unbox (UMat n m a)
+
 {-
 >>> fromBatchData  $ V.fromList [Linear.V2 0 1, Linear.V2 2 3, Linear.V2 3 (4 :: Double)]
 MkSomeBatch (Mat {runMat = Array U Par (Sz (1 :. 6))
@@ -1087,3 +1221,40 @@ MkSomeBatch (Mat {runMat = Array U Par (Sz (4 :. 2))
 -}
 
 deriving instance (Floating a, MU.Unbox a) => M.NumericFloat M.U a
+
+-- | N.B. Checks header statically to prevent malformed deserialisation.
+instance
+  (KnownNat n, KnownNat m, Persist a, M.Manifest r a) =>
+  Persist (Mat r n m a)
+  where
+  get = do
+    let !expSize = Sz2 (dimVal @m) (dimVal @n)
+    mat0 <- getArray
+    when (M.size mat0 /= expSize) $
+      fail $
+        "Matrix size mismatched; expected: "
+          <> show expSize
+          <> ", but got: "
+          <> show (M.size mat0)
+    pure $ Mat mat0
+  put = putArray . runMat
+  {-# INLINE put #-}
+
+-- | N.B. Checks header statically to prevent malformed deserialisation.
+instance
+  (KnownNat n, Persist a, M.Manifest r a) =>
+  Persist (Vec r n a)
+  where
+  get = do
+    let !expSize = Sz1 (dimVal @n)
+    mat0 <- getArray
+    when (M.size mat0 /= expSize) $
+      fail $
+        "Vector size mismatched; expected: "
+          <> show expSize
+          <> ", but got: "
+          <> show (M.size mat0)
+    pure $ Vec mat0
+  {-# INLINE get #-}
+  put = putArray . runVec
+  {-# INLINE put #-}

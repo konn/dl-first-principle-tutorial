@@ -1,3 +1,5 @@
+{-# HLINT ignore "Redundant bracket" #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE ConstraintKinds #-}
@@ -30,11 +32,10 @@
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 
-{-# HLINT ignore "Redundant bracket" #-}
-
 module DeepLearning.NeuralNetowrk.Massiv
   ( -- * Central data-types
     NeuralNetwork,
+    SomeNeuralNetwork (..),
     SomeNetwork (..),
     simpleSomeNetwork,
     activationVal,
@@ -59,6 +60,7 @@ module DeepLearning.NeuralNetowrk.Massiv
     sigmoid_,
     reLU_,
     tanh_,
+    softmax_,
     passthru_,
     batchnorm,
 
@@ -93,7 +95,7 @@ module DeepLearning.NeuralNetowrk.Massiv
     BN,
 
     -- * Operators for manipulating networks
-    withKnownNetwork,
+    withKnownNeuralNetwork,
     mapNetwork,
     htraverseNetwork,
     zipNetworkWith,
@@ -106,11 +108,13 @@ module DeepLearning.NeuralNetowrk.Massiv
 where
 
 import Control.Applicative (liftA2)
-import Control.Arrow ((&&&), (>>>))
+import Control.Arrow ((>>>))
+import Control.DeepSeq (NFData (..))
 import Control.Lens (Lens', lens, _1, _2)
-import Control.Subcategory (CZip (..), cmap)
+import Control.Monad (when)
 import Control.Subcategory.Linear
 import Data.Bifunctor (bimap)
+import qualified Data.Bifunctor as Bi
 import Data.Coerce (coerce)
 import qualified Data.DList as DL
 import Data.Functor.Product (Product)
@@ -119,30 +123,71 @@ import Data.Kind (Type)
 import Data.List (iterate')
 import qualified Data.Massiv.Array as M
 import qualified Data.Massiv.Array.Manifest.Vector as VM
-import Data.Monoid (Sum (..))
-import Data.Proxy (Proxy)
+import Data.Monoid (Ap (..), Sum (..))
+import Data.Persist (Get, Persist (..), Put)
+import Data.Proxy (Proxy (..))
 import Data.Strict (Pair (..))
 import qualified Data.Strict.Tuple as SP
 import Data.Tuple (swap)
+import Data.Type.Equality (testEquality, type (:~:) (..))
 import Data.Type.Natural
 import qualified Data.Vector.Generic as G
 import Data.Vector.Orphans
 import qualified Data.Vector.Unboxed as U
+import Data.Word (Word8)
 import Generic.Data
 import Numeric.Backprop
-import Numeric.Function.Activation (sigmoid)
+import Numeric.Function.Activation (relu, sigmoid, softmax)
 import Numeric.Natural (Natural)
 import System.Random.MWC.Distributions (normal)
 import System.Random.Stateful
+import Type.Reflection (typeRep)
 
 data LayerKind = Aff | Lin | Act Activation | BN
   deriving (Show, Eq, Ord, Generic)
+  deriving anyclass (Persist)
+
+data Activation = ReLU | Sigmoid | Tanh | Softmax | Id
+  deriving (Show, Eq, Ord, Generic, Enum, Bounded)
+  deriving anyclass (Persist)
 
 data SActivation (a :: Activation) where
   SReLU :: SActivation 'ReLU
   SSigmoid :: SActivation 'Sigmoid
   STanh :: SActivation 'Tanh
+  SSoftmax :: SActivation 'Softmax
   SId :: SActivation 'Id
+
+instance KnownActivation a => Persist (SActivation a) where
+  put = const $ pure ()
+  {-# INLINE put #-}
+  get = pure sActivation
+  {-# INLINE get #-}
+
+instance Persist SomeActivation where
+  put = \case (MkSomeActivation v) -> put $ activationVal v
+  {-# INLINE put #-}
+  get = someActivation <$> get
+  {-# INLINE get #-}
+
+data SomeActivation where
+  MkSomeActivation :: KnownActivation act => SActivation act -> SomeActivation
+
+deriving instance Show SomeActivation
+
+activationVal :: SActivation act -> Activation
+activationVal SReLU = ReLU
+activationVal SSigmoid = Sigmoid
+activationVal STanh = Tanh
+activationVal SSoftmax = Softmax
+activationVal SId = Id
+
+someActivation :: Activation -> SomeActivation
+someActivation ReLU = MkSomeActivation SReLU
+someActivation Sigmoid = MkSomeActivation SSigmoid
+someActivation Tanh = MkSomeActivation STanh
+someActivation Softmax = MkSomeActivation SSoftmax
+someActivation Id = MkSomeActivation SId
 
 deriving instance Show (SActivation a)
 
@@ -157,6 +202,9 @@ instance KnownActivation 'Sigmoid where
 
 instance KnownActivation 'Tanh where
   sActivation = STanh
+
+instance KnownActivation 'Softmax where
+  sActivation = SSoftmax
 
 instance KnownActivation 'Id where
   sActivation = SId
@@ -201,26 +249,6 @@ type BN = 'BN
 
 type LayerLike = LayerKind -> Nat -> Nat -> Type -> Type
 
-data Activation = ReLU | Sigmoid | Tanh | Id
-  deriving (Show, Eq, Ord, Generic, Enum, Bounded)
-
-data SomeActivation where
-  MkSomeActivation :: KnownActivation act => SActivation act -> SomeActivation
-
-deriving instance Show SomeActivation
-
-activationVal :: SActivation act -> Activation
-activationVal SReLU = ReLU
-activationVal SSigmoid = Sigmoid
-activationVal STanh = Tanh
-activationVal SId = Id
-
-someActivation :: Activation -> SomeActivation
-someActivation ReLU = MkSomeActivation SReLU
-someActivation Sigmoid = MkSomeActivation SSigmoid
-someActivation Tanh = MkSomeActivation STanh
-someActivation Id = MkSomeActivation SId
-
 type LayerSpec :: LayerLike
 data LayerSpec l n m a where
   AffP :: a -> LayerSpec 'Aff n m a
@@ -248,6 +276,9 @@ reLU_ = ActP
 
 tanh_ :: forall i a. LayerSpec (Act 'Tanh) i i a
 tanh_ = ActP
+
+softmax_ :: forall i a. LayerSpec (Act 'Softmax) i i a
+softmax_ = ActP
 
 passthru_ :: forall i a. LayerSpec (Act 'Id) i i a
 passthru_ = ActP
@@ -625,6 +656,7 @@ applyActivatorBV ::
   , KnownNat n
   , KnownNat m
   , M.Load r M.Ix2 a
+  , M.Load r M.Ix1 a
   , M.NumericFloat r a
   , RealFloat a
   , M.Manifest r a
@@ -632,11 +664,10 @@ applyActivatorBV ::
   SActivation act ->
   BVar s (Mat r n m a) ->
   BVar s (Mat r n m a)
-applyActivatorBV SReLU =
-  liftOp1 $
-    op1 (cmap (max 0) &&& czipWith (\x d -> if x < 0 then 0 else d))
+applyActivatorBV SReLU = relu
 applyActivatorBV SSigmoid = sigmoid
 applyActivatorBV STanh = tanh
+applyActivatorBV SSoftmax = softmax
 applyActivatorBV SId = id
 
 -- | FIXME: defining on the case of @l@ would reduce runtime branching.
@@ -686,6 +717,29 @@ data NeuralNetwork i ls o a = NeuralNetwork
   , weights :: !(Network Weights i ls o a)
   }
   deriving (Generic)
+  deriving anyclass (Persist)
+
+data SomeNeuralNetwork i o a where
+  MkSomeNeuralNetwork :: NeuralNetwork i ls o a -> SomeNeuralNetwork i o a
+
+instance
+  ( KnownNat i
+  , KnownNat o
+  , Persist a
+  , U.Unbox a
+  ) =>
+  Persist (SomeNeuralNetwork i o a)
+  where
+  put (MkSomeNeuralNetwork NeuralNetwork {..}) =
+    withKnownNetwork recParams $ do
+      put $ MkSomeNetwork weights
+      put recParams
+  get =
+    getSomeNetwork >>= \case
+      MkSomeNetwork (weights :: Network Weights i hs o a) ->
+        withKnownNetwork weights $ do
+          recParams <- get
+          pure $ MkSomeNeuralNetwork NeuralNetwork {..}
 
 instance
   ( KnownNat i
@@ -832,6 +886,10 @@ data NetworkShape i xs o where
   IsOutput :: NetworkShape i '[] i
   IsCons :: (KnownLayerKind l i k, KnownNat k) => NetworkShape k hs o -> NetworkShape i (L l k ': hs) o
 
+networkSize :: NetworkShape i xs o -> Word
+networkSize IsOutput = 0
+networkSize (IsCons n) = 1 + networkSize n
+
 class (KnownNat i, KnownNat o) => KnownNetwork i (xs :: [Spec]) o where
   networkShape :: NetworkShape i xs o
 
@@ -935,8 +993,9 @@ evalBatchNN ::
   ( KnownNat m
   , U.Unbox a
   , RealFloat a
-  , KnownNetwork i hs o
   , Backprop a
+  , KnownNat i
+  , KnownNat o
   ) =>
   NeuralNetwork i hs o a ->
   UMat m i a ->
@@ -947,30 +1006,29 @@ evalBatchNN = curryNN $ \ps ->
 
 -- | The variant of 'evalBatchNN' with functorial inputs and outputs.
 evalBatchF ::
-  forall t u hs i o a v.
+  forall t u hs i o a v v'.
   ( U.Unbox a
   , RealFloat a
-  , KnownNetwork i hs o
   , G.Vector v (t a)
-  , G.Vector v (u a)
   , i ~ Size t
   , o ~ Size u
   , HasSize t
   , FromVec u
   , Backprop a
-  , M.Load (VM.ARepr v) M.Ix1 (u a)
-  , M.Manifest (VM.ARepr v) (u a)
-  , VM.VRepr (VM.ARepr v) ~ v
+  , VM.VRepr (VM.ARepr v') ~ v'
+  , M.Load (VM.ARepr v') M.Ix1 (u a)
+  , M.Manifest (VM.ARepr v') (u a)
+  , G.Vector v' (u a)
   ) =>
   NeuralNetwork i hs o a ->
   v (t a) ->
-  v (u a)
+  v' (u a)
 {-# INLINE evalBatchF #-}
 evalBatchF nn inps =
   case fromBatchData inps of
     MkSomeBatch xs -> fromRowMat $ evalBatchNN nn xs
 
-withKnownNetwork ::
+withKnownNeuralNetwork ::
   KnownNat i =>
   ( KnownNetwork i hs o =>
     NeuralNetwork i hs o a ->
@@ -978,11 +1036,17 @@ withKnownNetwork ::
   ) ->
   NeuralNetwork i hs o a ->
   r
-withKnownNetwork f i@(NeuralNetwork Output Output) = f i
-withKnownNetwork f (NeuralNetwork (ps :- pss) (ws :- wss)) =
-  withKnownNetwork
-    (curryNN $ \ps' ws' -> f $ NeuralNetwork (ps :- ps') (ws :- ws'))
-    (NeuralNetwork pss wss)
+withKnownNeuralNetwork f n = withKnownNetwork (recParams n) (f n)
+
+withKnownNetwork ::
+  KnownNat i =>
+  Network h i hs o a ->
+  ( KnownNetwork i hs o =>
+    r
+  ) ->
+  r
+withKnownNetwork Output f = f
+withKnownNetwork (_ :- ps) f = withKnownNetwork ps f
 
 evalNN ::
   ( KnownNat i
@@ -994,7 +1058,7 @@ evalNN ::
   UVec i a ->
   UVec o a
 {-# INLINE evalNN #-}
-evalNN = withKnownNetwork $
+evalNN = withKnownNeuralNetwork $
   \n -> computeV . columnAt @0 . evalBatchNN n . asColumn
 
 -- | The variant of 'evalNN' with functorial inputs and outputs.
@@ -1043,9 +1107,9 @@ htraverseNetwork f (hfka :- net') =
 
 foldMapNetwork ::
   forall h i ls o a w.
-  (KnownNat i, Monoid w) =>
+  (Monoid w) =>
   ( forall l x y.
-    (KnownNat x, KnownNat y, KnownLayerKind l x y) =>
+    (KnownLayerKind l x y) =>
     h l x y a ->
     w
   ) ->
@@ -1053,10 +1117,7 @@ foldMapNetwork ::
   w
 foldMapNetwork f = go
   where
-    go ::
-      (KnownNat x) =>
-      Network h x hs o a ->
-      w
+    go :: Network h x hs o a -> w
     {-# INLINE go #-}
     go Output = mempty
     go (h :- hs) = f h <> go hs
@@ -1137,13 +1198,15 @@ type LossFunction m o a =
   forall s. Reifies s W => BVar s (UMat m o a) -> BVar s (UMat m o a) -> BVar s a
 
 gradNN ::
-  forall ls i o m a.
+  forall ls i o m a k.
   ( RealFloat a
   , KnownNat m
   , U.Unbox a
   , Backprop a
   , KnownNat i
   , KnownNat o
+  , Backprop k
+  , VectorSpace k a
   ) =>
   -- | Loss function
   LossFunction m o a ->
@@ -1157,34 +1220,33 @@ gradNN loss (inps, oups) recPs =
     . backpropWith
       ( \net ->
           let ysRecs' = runNN Train recPs net (auto inps)
-           in T2 (loss (ysRecs' ^^. _1) (auto oups)) (ysRecs' ^^. _2)
+           in T2 (loss (ysRecs' ^^. _1) (auto oups) /. fromIntegral (dimVal @m)) (ysRecs' ^^. _2)
       )
 
 crossEntropy ::
-  forall o m a k.
+  forall o m a.
   ( KnownNat o
   , KnownNat m
   , U.Unbox a
   , Backprop a
   , Floating a
-  , Backprop k
-  , VectorSpace k a
   ) =>
   LossFunction m o a
 crossEntropy ys' ys =
   negate $
     sumS (ys * log ys' + (1 - ys) * log (1 - ys'))
-      /. fromIntegral (dimVal @m)
 
 -- | The variant of 'trainGD' which accepts functorial inputs and outputs.
 trainGDF ::
-  forall i o a hs.
+  forall i o a hs k.
   ( U.Unbox a
   , U.Unbox (i a)
   , U.Unbox (o a)
   , HasSize i
   , HasSize o
   , Backprop a
+  , VectorSpace k a
+  , Backprop k
   ) =>
   RealFloat a =>
   -- | Learning rate (dt)
@@ -1212,6 +1274,8 @@ trainGD ::
   ( KnownNat m
   , U.Unbox a
   , Backprop a
+  , VectorSpace k a
+  , Backprop k
   , KnownNat i
   ) =>
   RealFloat a =>
@@ -1225,13 +1289,15 @@ trainGD ::
   NeuralNetwork i hs o a ->
   NeuralNetwork i hs o a
 trainGD gamma alpha n loss dataSet =
-  withKnownNetwork $
+  withKnownNeuralNetwork $
     trainGD_ gamma alpha n loss dataSet
 
 trainGD_ ::
   ( KnownNat m
   , U.Unbox a
   , Backprop a
+  , VectorSpace k a
+  , Backprop k
   , KnownNetwork i hs o
   ) =>
   RealFloat a =>
@@ -1255,13 +1321,15 @@ data AdamParams a = AdamParams {beta1, beta2, epsilon :: !a}
 
 -- | The variant of 'trainAdam' with functorial inputs and outputs.
 trainAdamF ::
-  forall i hs o a.
+  forall i hs o a k.
   ( U.Unbox a
   , Backprop a
   , HasSize i
   , HasSize o
   , U.Unbox (i a)
   , U.Unbox (o a)
+  , VectorSpace k a
+  , Backprop k
   ) =>
   RealFloat a =>
   -- | Learning rate (dt)
@@ -1281,11 +1349,13 @@ trainAdamF gamma alpha ap n loss dataSet =
        in trainAdam gamma alpha ap n loss (computeM ins, computeM ous)
 
 trainAdam ::
-  forall m i hs o a.
+  forall m i hs o a k.
   ( KnownNat m
   , U.Unbox a
   , Backprop a
   , KnownNat i
+  , VectorSpace k a
+  , Backprop k
   ) =>
   RealFloat a =>
   -- | Learning rate (dt)
@@ -1299,15 +1369,17 @@ trainAdam ::
   NeuralNetwork i hs o a ->
   NeuralNetwork i hs o a
 trainAdam gamma alpha ap n loss dataSet =
-  withKnownNetwork $
+  withKnownNeuralNetwork $
     trainAdam_ gamma alpha ap n loss dataSet
 
 trainAdam_ ::
-  forall m i hs o a.
+  forall m i hs o a k.
   ( KnownNetwork i hs o
   , KnownNat m
   , U.Unbox a
   , Backprop a
+  , VectorSpace k a
+  , Backprop k
   ) =>
   RealFloat a =>
   -- | Learning Rate (dt)
@@ -1422,3 +1494,250 @@ networkStat =
         { parameters = Sum $ 4 * dimVal @o
         , layers = DL.singleton $ BatchL $ dimVal @o
         }
+
+instance
+  ( KnownNat o
+  , NFData a
+  , U.Unbox a
+  , forall l x y. NFData (h l x y a)
+  ) =>
+  NFData (Network h i ls o a)
+  where
+  rnf Output = ()
+  rnf (h :- hs) = rnf h `seq` rnf hs
+  {-# INLINE rnf #-}
+
+instance NFData (Weights l i o a) where
+  rnf (AffW mat vec) = rnf mat `seq` rnf vec
+  rnf (LinW mat) = rnf mat
+  rnf ActW = ()
+  rnf (BatW vec vec') = rnf vec `seq` rnf vec'
+  {-# INLINE rnf #-}
+
+instance NFData (SActivation a) where
+  rnf SReLU = ()
+  rnf SSigmoid = ()
+  rnf STanh = ()
+  rnf SSoftmax = ()
+  rnf SId = ()
+
+instance NFData (RecParams l i o a) where
+  rnf AffRP = ()
+  rnf LinRP = ()
+  rnf (ActRP sa) = rnf sa
+  rnf (BatRP vec vec') = rnf vec `seq` rnf vec'
+  {-# INLINE rnf #-}
+
+getNetworkWith ::
+  ( Persist a
+  , U.Unbox a
+  , forall l x y. KnownLayerKind l x y => Persist (h l x y a)
+  ) =>
+  NetworkShape i xs o ->
+  Get (Network h i xs o a)
+getNetworkWith shape = do
+  validateNetworkHeader shape
+  getNetworkBodyWith shape
+
+validateNetworkHeader :: NetworkShape i xs o -> Get ()
+validateNetworkHeader shape = do
+  let !expSize = networkSize shape
+  size <- get
+  when (size /= expSize) $
+    fail $
+      "validateNetworkHeader: Network has different size; expected: "
+        <> show expSize
+        <> ", but got: "
+        <> show size
+
+getNetworkBodyWith ::
+  ( Persist a
+  , U.Unbox a
+  , forall l x y. KnownLayerKind l x y => Persist (h l x y a)
+  ) =>
+  NetworkShape i xs o ->
+  Get (Network h i xs o a)
+getNetworkBodyWith IsOutput = pure Output
+getNetworkBodyWith (IsCons ns') = (:-) <$> get <*> getNetworkWith ns'
+
+putNetworkWithHeader ::
+  ((forall l x y. KnownLayerKind l x y => Persist (h l x y a))) =>
+  Network h i xs o a ->
+  Put ()
+putNetworkWithHeader =
+  SP.uncurry (*>)
+    . Bi.bimap (put . getSum @Word) getAp
+    . foldMapNetwork ((1 :!:) <$> Ap . put)
+
+data SomeLayer h a where
+  MkSomeLayer :: KnownLayerKind l x y => h l x y a -> SomeLayer h a
+
+instance
+  ( forall l x y. KnownLayerKind l x y => Persist (h l x y a)
+  , Persist (SomeLayer h a)
+  , KnownNat i
+  , KnownNat o
+  ) =>
+  Persist (SomeNetwork h i o a)
+  where
+  put (MkSomeNetwork net) = putNetworkWithHeader net
+  {-# INLINE put #-}
+  get = getSomeNetwork
+  {-# INLINE get #-}
+
+getSomeNetwork ::
+  forall h i o a.
+  ( Persist (SomeLayer h a)
+  , KnownNat i
+  , KnownNat o
+  ) =>
+  Get (SomeNetwork h i o a)
+getSomeNetwork = do
+  n <- get @Word
+  go @i n
+  where
+    go :: forall n. KnownNat n => Word -> Get (SomeNetwork h n o a)
+    go 0 =
+      case testEquality (typeRep @n) (typeRep @o) of
+        Just Refl -> pure $ MkSomeNetwork Output
+        Nothing ->
+          fail $
+            "getSomeNetwork: output size mismatched: (expect, got) = "
+              <> show (natVal @o Proxy, natVal @n Proxy)
+    go !n = do
+      MkSomeLayer (l :: h l n' k a) <- get
+      case testEquality (typeRep @n') (typeRep @n) of
+        Just Refl -> do
+          MkSomeNetwork !rest <- go @k (n - 1)
+          pure $ MkSomeNetwork $ l :- rest
+        Nothing ->
+          fail $
+            "getSomeNetwork.go: input size mismatched: (exp, got) = "
+              <> show (natVal @n Proxy, natVal @n' Proxy)
+
+instance
+  ( Persist a
+  , U.Unbox a
+  , forall l x y. KnownLayerKind l x y => Persist (h l x y a)
+  , KnownNetwork i ls o
+  ) =>
+  Persist (Network h i ls o a)
+  where
+  put = putNetworkWithHeader
+  {-# INLINE put #-}
+  get = getNetworkWith networkShape
+  {-# INLINE get #-}
+
+instance
+  (KnownLayerKind l i o, Persist a, U.Unbox a) =>
+  Persist (Weights l i o a)
+  where
+  get = case sLayerKind @l @i @o of
+    sa@SAff -> AffW <$ expectTag (toTag sa) <*> get <*> get
+    sa@SLin -> LinW <$ expectTag (toTag sa) <*> get
+    sa@(SAct _) -> ActW <$ expectTag (toTag sa) <* expectDim @i
+    sa@SBN -> BatW <$ expectTag (toTag sa) <*> get <*> get
+  put (AffW mat vec) =
+    put Aff *> put mat *> put vec
+  put (LinW mat) = put Lin *> put mat
+  put ActW = case sLayerKind @l @i @o of
+    SAct sa -> put (Act $ activationVal sa) *> putDim @i
+  put (BatW vec vec') = put BN *> put vec *> put vec'
+  {-# INLINE put #-}
+
+instance
+  (KnownLayerKind l i o, Persist a, U.Unbox a) =>
+  Persist (RecParams l i o a)
+  where
+  get = case sLayerKind @l @i @o of
+    sa@SAff -> AffRP <$ expectTag (toTag sa)
+    sa@SLin -> LinRP <$ expectTag (toTag sa)
+    sa@(SAct sact) -> ActRP sact <$ expectTag (toTag sa) <* expectDim @i
+    sa@SBN -> BatRP <$ expectTag (toTag sa) <*> get <*> get
+  put AffRP = put Aff
+  put LinRP = put Lin
+  put (ActRP sact) = do
+    put $ Act $ activationVal sact
+    putDim @i
+  put (BatRP vec vec') = put BN *> put vec *> put vec'
+  {-# INLINE put #-}
+
+putDim :: forall i. KnownNat i => Put ()
+putDim = put @Word $ fromIntegral $ dimVal @i
+
+expectDim :: forall i. KnownNat i => Get ()
+expectDim = do
+  idx <- get @Word
+  when (idx /= fromIntegral (dimVal @i)) $
+    fail $ "Dimension mismatched: " <> show (dimVal @i, idx)
+
+putSomeLayer :: (forall l x y. KnownLayerKind l x y => Persist (h l x y a)) => SomeLayer h a -> Put ()
+putSomeLayer (MkSomeLayer l) = put l
+
+instance (U.Unbox a, Persist a) => Persist (SomeLayer Weights a) where
+  get =
+    get >>= \case
+      Aff -> do
+        mat <- get
+        vec <- get
+        case (M.size mat, M.size vec) of
+          (M.Sz2 o i, M.Sz1 o')
+            | o == o' ->
+              case (someNatVal (fromIntegral o), someNatVal (fromIntegral i)) of
+                (SomeNat (_ :: Proxy o), SomeNat (_ :: Proxy i)) ->
+                  pure $ MkSomeLayer $ AffW (unsafeToMat @i @o mat) (unsafeToVec @o vec)
+            | otherwise ->
+              fail $
+                "SomeLayer Weight: decoding mismatched: "
+                  <> show (M.size mat, M.size vec)
+      Lin -> do
+        mat <- get
+        let M.Sz2 o i = M.size mat
+        case (someNatVal (fromIntegral o), someNatVal (fromIntegral i)) of
+          (SomeNat (_ :: Proxy o), SomeNat (_ :: Proxy i)) ->
+            pure $ MkSomeLayer $ LinW (unsafeToMat @i @o mat)
+      Act act -> do
+        dim <- getDim
+        case (someActivation act, someNatVal (fromIntegral dim)) of
+          (MkSomeActivation (_ :: SActivation act), SomeNat (_ :: Proxy i)) ->
+            pure $ MkSomeLayer $ ActW @act @i
+      BN -> do
+        vec <- get
+        vec' <- get
+        let M.Sz1 !i = M.size vec
+        when (M.size vec' /= M.Sz1 i) $
+          fail $ "Input size mismatched: " <> show (i, M.size vec')
+        case someNatVal $ fromIntegral i of
+          (SomeNat (_ :: Proxy i)) ->
+            pure $ MkSomeLayer $ BatW (unsafeToVec @i vec) (unsafeToVec @i vec')
+  put = putSomeLayer
+  {-# INLINE put #-}
+
+getDim :: Get Word
+getDim = get
+
+expectTag :: Word8 -> Get ()
+expectTag tag = do
+  tag' <- get
+  when (tag /= tag') $
+    fail $
+      "Tag mismatched; expected: " <> show tag
+        <> ", but got: "
+        <> show tag'
+
+toTag :: SLayerKind l i o -> Word8
+toTag =
+  \case
+    SAff -> affTag
+    SLin -> linTag
+    SAct sact -> actTag (activationVal sact)
+    SBN -> batTag
+
+affTag, linTag, batTag :: Word8
+actTag :: Activation -> Word8
+affTag = 0
+linTag = 1
+
+actTag = (2 +) <$> toEnum . fromEnum
+
+batTag = 1 + actTag maxBound

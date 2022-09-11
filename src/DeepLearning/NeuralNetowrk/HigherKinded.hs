@@ -81,7 +81,7 @@ import Linear
 import Numeric.AD (auto, grad)
 import Numeric.AD.Internal.Reverse (Tape)
 import Numeric.AD.Mode.Reverse (Reverse)
-import Numeric.Function.Activation (relu, sigmoid)
+import Numeric.Function.Activation (sigmoid)
 import System.Random.MWC.Distributions (normal, standard)
 import System.Random.Stateful (RandomGenM)
 
@@ -142,7 +142,7 @@ deriving via
     (Applicative i, Applicative o) => Applicative (Weights i o)
 
 applyActivator :: RealFloat a => Activation -> a -> a
-applyActivator ReLU = relu
+applyActivator ReLU = max 0
 applyActivator Sigmoid = sigmoid
 applyActivator Tanh = tanh
 applyActivator Id = id

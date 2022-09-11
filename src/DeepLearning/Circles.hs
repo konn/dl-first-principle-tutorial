@@ -69,7 +69,7 @@ decodeCluster p =
 
 predictionAccuracy ::
   NeuralNetwork 2 ls 1 Double -> U.Vector ClusteredPoint -> Double
-predictionAccuracy = withKnownNetwork $ \nn dats ->
+predictionAccuracy = withKnownNeuralNetwork $ \nn dats ->
   let adjusted = U.map (\ClusteredPoint {..} -> Pair coord $ clusterNum cluster) dats
    in case fromBatchData adjusted of
         MkSomeBatch (inOuts :: UMat m 3 a) ->
@@ -94,7 +94,7 @@ pixelateCluster ::
   Point V2 Double ->
   NeuralNetwork 2 ls 1 Double ->
   Diagram b
-pixelateCluster divs toColour ll ur = withKnownNetwork $ \nn ->
+pixelateCluster divs toColour ll ur = withKnownNeuralNetwork $ \nn ->
   let V2 w h = ur .-. ll
       dx = min w h / fromIntegral divs
       xDiv = ceiling (w / dx)
