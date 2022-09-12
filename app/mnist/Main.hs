@@ -59,6 +59,7 @@ import System.FilePath ((</>))
 import System.IO (BufferMode (LineBuffering), hSetBuffering, stdout)
 import System.Random.Stateful (RandomGenM, globalStdGen)
 import Text.Printf (printf)
+import UnliftIO (finally, mask_)
 import UnliftIO.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 
 main :: IO ()
@@ -138,8 +139,7 @@ doTrain g TrainOpts {..} = do
   puts "* Training Mode"
   now <- liftIO getZonedTime
   createDirectoryIfMissing True modelDir
-  let modelFile = modelDir </> batchedName
-      stamp = formatTime defaultTimeLocale "%Y%m%d-%H%M%S" now
+  let stamp = formatTime defaultTimeLocale "%Y%m%d-%H%M%S" now
   there <- doesFileExist modelFile
   batchedNN <-
     if there
@@ -190,6 +190,7 @@ doTrain g TrainOpts {..} = do
     liftIO $ BS.writeFile modelFile $ Persist.encode net'
     puts $ printf "Model file written to: %s" modelFile
   where
+    modelFile = modelDir </> batchedName
     params =
       MNISTParams
         { timeStep = gamma
@@ -199,13 +200,16 @@ doTrain g TrainOpts {..} = do
 
     step numTests ((net :!: !n) :!: (!batches :!: !tests)) epoch = do
       let n' = epoch + n
-      puts $ printf "** Batch %d started." n'
+      puts $ printf "** Batch(es) %d..%d started." n n'
       net' :> rest <-
         S.fold (flip (train @28 params)) net id $
           S.map (fst . U.unzip) $
             S.splitAt epoch batches
       testAcc :!: testData' <- calcTestAccuracy numTests batchSize net' tests
       puts $ printf "Test Accuracy: %f%%" $ testAcc * 100
+      mask_ $
+        liftIO (BS.writeFile modelFile $ Persist.encode net')
+          `finally` puts (printf "Model file written to: %s" modelFile)
       pure ((net' :!: n') :!: (rest :!: testData'))
 
 chunksOfVector :: (U.Unbox a, PrimMonad m) => Int -> Stream (Of a) m r -> Stream (Of (U.Vector a)) m r
