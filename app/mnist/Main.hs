@@ -17,6 +17,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE NoStarIsType #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 
@@ -30,19 +31,20 @@ import Control.Lens hiding (Snoc, (:>))
 import Control.Monad (when)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Resource (MonadResource, ResourceT, runResourceT)
-import Control.Subcategory.Linear (unsafeToMat)
+import Control.Subcategory.Linear (FromVec (fromVec), HasSize (Size, toVec), UMat, UVec, Vec, asColumn, dimVal, unMat, unVec, unsafeToMat, unsafeToVec)
+import qualified Data.Bifunctor as Bi
 import qualified Data.ByteString as BS
 import qualified Data.DList as DL
-import Data.Foldable (foldlM)
+import Data.Foldable (fold)
+import Data.Functor (void)
 import Data.Functor.Of (Of (..))
 import Data.Massiv.Array (PrimMonad, Sz (..))
 import qualified Data.Massiv.Array as M
 import Data.Massiv.Array.IO (readImageAuto)
 import Data.Maybe (fromMaybe)
-import Data.Monoid (Sum (..))
+import Data.Monoid (Dual (..), Endo (..), Sum (..))
 import qualified Data.Persist as Persist
-import Data.Strict (Pair (..))
-import Data.Strict.Tuple ((:!:))
+import Data.Proxy (Proxy)
 import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.MNIST
@@ -59,7 +61,7 @@ import System.FilePath ((</>))
 import System.IO (BufferMode (LineBuffering), hSetBuffering, stdout)
 import System.Random.Stateful (RandomGenM, globalStdGen)
 import Text.Printf (printf)
-import UnliftIO (finally, mask_)
+import UnliftIO (mask_)
 import UnliftIO.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
 
 main :: IO ()
@@ -131,6 +133,7 @@ adams :: AdamParams Double
 adams = AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-16}
 
 doTrain ::
+  forall m g r.
   (MonadIO m, M.MonadUnliftIO m, RandomGenM g r (ResourceT m), PrimMonad m) =>
   g ->
   TrainOpts ->
@@ -171,24 +174,35 @@ doTrain g TrainOpts {..} = do
             & shuffleBuffered g shuffWindow
             & S.map (\(a, d) -> ((a, toDigitVector d), d))
             & chunksOfVector batchSize
-            & S.cycle
-    (numTests, tests) <- readMNISTDataDir testDataDir
-    let testDataSet = S.cycle tests
-    puts $ printf "# %d test datasets given" numTests
-    testAcc :!: testData' <- calcTestAccuracy numTests batchSize batchedNN testDataSet
-    puts "---"
-    puts $ printf "Initial Test Accuracy: %f%%" $ testAcc * 100
+    epochFunc <-
+      S.foldMap_
+        (Dual . Endo . train params . fst . U.unzip)
+        trainBatches
     let intvl = fromMaybe 1 outputInterval
         (blk, resid) = epochs `quotRem` intvl
         epcs =
           foldr (:) (replicate (min 1 resid) resid) $ replicate blk intvl
-    ((net' :!: _) :!: _) <-
-      foldlM
-        (step numBatches numTests)
-        ((batchedNN :!: 0) :!: (trainBatches :!: testData'))
+    (numTests, tests) <- readMNISTDataDir testDataDir
+    puts $ printf "# %d test datasets given" numTests
+    testsArray <- M.sunfoldrM S.uncons tests
+    let !testAcc = calcTestAccuracy batchedNN testsArray
+    puts $ printf "Initial Test Accuracy: %f%%" $ testAcc * 100
+    void $
+      ifoldlM
+        ( \outN net ecount -> do
+            let !begEpoch = batchSize * outN
+                !endEpoch = begEpoch + ecount
+            puts $ printf "** Epoch #%d..%d Started." begEpoch endEpoch
+            let !net' = appEndo (getDual $ fold (replicate ecount epochFunc)) net
+                !acc = calcTestAccuracy net' testsArray
+            puts $ printf "Test Accuracy: %f%%" $ acc * 100
+            mask_ $ do
+              liftIO $ BS.writeFile modelFile $ Persist.encode net'
+              puts $ printf "Model file written to: %s" modelFile
+            pure net'
+        )
+        batchedNN
         epcs
-    liftIO $ BS.writeFile modelFile $ Persist.encode net'
-    puts $ printf "Model file written to: %s" modelFile
   where
     modelFile = modelDir </> batchedName
     params =
@@ -198,47 +212,49 @@ doTrain g TrainOpts {..} = do
         , adamParams = adams
         }
 
-    step numBatches numTests ((net :!: !n) :!: (!batches :!: !tests)) epoch = do
-      let n' = epoch + n
-      puts $ printf "** Batch(es) %d..%d started." n n'
-      net' :> rest <-
-        S.fold (flip (train @28 params)) net id $
-          S.map (fst . U.unzip) $
-            S.splitAt (epoch * numBatches) batches
-      testAcc :!: testData' <- calcTestAccuracy numTests batchSize net' tests
-      puts $ printf "Test Accuracy: %f%%" $ testAcc * 100
-      mask_ $
-        liftIO (BS.writeFile modelFile $ Persist.encode net')
-          `finally` puts (printf "Model file written to: %s" modelFile)
-      pure ((net' :!: n') :!: (rest :!: testData'))
-
 chunksOfVector :: (U.Unbox a, PrimMonad m) => Int -> Stream (Of a) m r -> Stream (Of (U.Vector a)) m r
 chunksOfVector n =
   SS.chunksOf n
     >>> SS.mapped
       (L.impurely S.foldM (L.vectorM @_ @U.Vector))
 
-calcTestAccuracy ::
-  PrimMonad m =>
-  Int ->
-  Int ->
-  NeuralNetwork 784 BatchedNet 10 Double ->
-  Stream (Of (MNISTInput PixelSize, Digit)) (ResourceT m) r ->
-  ResourceT m (Double :!: Stream (Of (MNISTInput PixelSize, Digit)) (ResourceT m) r)
-calcTestAccuracy numBatch n net =
-  S.splitAt numBatch
-    >>> chunksOfVector n
-    >>> S.map
-      ( \dataSet ->
-          let (inps, outs) = U.unzip dataSet
-              ys' = predicts net inps
-           in accuracy outs ys'
-      )
-    >>> L.purely S.fold L.mean
-    >>> fmap tupleOf
+data SomeVector a where
+  MkSomeVector :: KnownNat n => UVec n a -> SomeVector a
 
-tupleOf :: Of a b -> Pair a b
-tupleOf (a :> b) = a :!: b
+toSomeVector :: (U.Unbox a, M.Load r M.Ix1 a) => M.Vector r a -> SomeVector a
+toSomeVector xs =
+  let us = M.computeP xs
+   in case someNatVal $ fromIntegral $ M.unSz $ M.size us of
+        SomeNat (_ :: Proxy n) -> MkSomeVector @n $ unsafeToVec us
+
+calcTestAccuracy ::
+  M.Load r M.Ix1 (MNISTInput PixelSize, Digit) =>
+  NeuralNetwork 784 BatchedNet 10 Double ->
+  M.Vector r (MNISTInput PixelSize, Digit) ->
+  Double
+calcTestAccuracy nn =
+  toSomeVector >>> \case
+    MkSomeVector (v :: UVec n (MNISTInput PixelSize, Digit)) ->
+      let len = dimVal @n
+          (inps, unVec -> expect) = unzipVec v
+          ans = unMat $ evalBatchNN nn $ fromRows inps
+       in M.sum
+            ( M.zipWith (\l r -> if l == r then 1.0 else 0.0) expect $
+                M.map (inferDigit . fromVec . unsafeToVec) $ M.outerSlices ans
+            )
+            / fromIntegral len
+
+fromRows :: forall m t a r. (HasSize t, U.Unbox a, M.Source r (t a)) => Vec r m (t a) -> UMat m (Size t) a
+fromRows =
+  unsafeToMat
+    . M.computeP
+    . M.concat' 1
+    . M.map (unMat . asColumn . toVec)
+    . unVec
+
+unzipVec :: (U.Unbox a, U.Unbox b) => UVec n (a, b) -> (Vec M.D n a, Vec M.D n b)
+unzipVec =
+  unVec >>> M.unzip >>> Bi.bimap unsafeToVec unsafeToVec
 
 puts :: MonadIO m => String -> m ()
 puts = liftIO . putStrLn
