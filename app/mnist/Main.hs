@@ -184,7 +184,7 @@ doTrain g TrainOpts {..} = do
           foldr (:) (replicate (min 1 resid) resid) $ replicate blk intvl
     ((net' :!: _) :!: _) <-
       foldlM
-        (step numTests)
+        (step numBatches numTests)
         ((batchedNN :!: 0) :!: (trainBatches :!: testData'))
         epcs
     liftIO $ BS.writeFile modelFile $ Persist.encode net'
@@ -198,13 +198,13 @@ doTrain g TrainOpts {..} = do
         , adamParams = adams
         }
 
-    step numTests ((net :!: !n) :!: (!batches :!: !tests)) epoch = do
+    step numBatches numTests ((net :!: !n) :!: (!batches :!: !tests)) epoch = do
       let n' = epoch + n
       puts $ printf "** Batch(es) %d..%d started." n n'
       net' :> rest <-
         S.fold (flip (train @28 params)) net id $
           S.map (fst . U.unzip) $
-            S.splitAt epoch batches
+            S.splitAt (epoch * numBatches) batches
       testAcc :!: testData' <- calcTestAccuracy numTests batchSize net' tests
       puts $ printf "Test Accuracy: %f%%" $ testAcc * 100
       mask_ $
