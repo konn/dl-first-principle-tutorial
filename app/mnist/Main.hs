@@ -38,6 +38,7 @@ import Data.Functor.Of (Of (..))
 import Data.Massiv.Array (PrimMonad, Sz (..))
 import qualified Data.Massiv.Array as M
 import Data.Massiv.Array.IO (readImageAuto)
+import Data.Maybe (fromMaybe)
 import Data.Monoid (Sum (..))
 import qualified Data.Persist as Persist
 import Data.Strict (Pair (..))
@@ -177,11 +178,15 @@ doTrain g TrainOpts {..} = do
     testAcc :!: testData' <- calcTestAccuracy numTests batchSize batchedNN testDataSet
     puts "---"
     puts $ printf "Initial Test Accuracy: %f%%" $ testAcc * 100
-    (net' :!: _) <-
+    let intvl = fromMaybe 1 outputInterval
+        (blk, resid) = epochs `quotRem` intvl
+        epcs =
+          foldr (:) (replicate (min 1 resid) resid) $ replicate blk intvl
+    ((net' :!: _) :!: _) <-
       foldlM
-        (step numBatches numTests)
-        (batchedNN :!: (trainBatches :!: testData'))
-        [1 .. epochs]
+        (step numTests)
+        ((batchedNN :!: 0) :!: (trainBatches :!: testData'))
+        epcs
     liftIO $ BS.writeFile modelFile $ Persist.encode net'
     puts $ printf "Model file written to: %s" modelFile
   where
@@ -191,15 +196,17 @@ doTrain g TrainOpts {..} = do
         , dumpingFactor = 0.01
         , adamParams = adams
         }
-    step numBatches numTests (net :!: (batches :!: tests)) epoch = do
-      puts $ printf "** Batch %d started." epoch
+
+    step numTests ((net :!: !n) :!: (!batches :!: !tests)) epoch = do
+      let n' = epoch + n
+      puts $ printf "** Batch %d started." n'
       net' :> rest <-
         S.fold (flip (train @28 params)) net id $
           S.map (fst . U.unzip) $
-            S.splitAt numBatches batches
+            S.splitAt epoch batches
       testAcc :!: testData' <- calcTestAccuracy numTests batchSize net' tests
       puts $ printf "Test Accuracy: %f%%" $ testAcc * 100
-      pure (net' :!: (rest :!: testData'))
+      pure ((net' :!: n') :!: (rest :!: testData'))
 
 chunksOfVector :: (U.Unbox a, PrimMonad m) => Int -> Stream (Of a) m r -> Stream (Of (U.Vector a)) m r
 chunksOfVector n =
