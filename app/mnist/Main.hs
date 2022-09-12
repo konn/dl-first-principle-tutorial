@@ -377,7 +377,7 @@ recogniseOptsP = do
   modelDir <-
     Opts.strOption $
       Opts.short 'M' <> Opts.long "models" <> Opts.metavar "DIR"
-        <> Opts.value (workDir </> "models" </> "with-batchnorm.dat")
+        <> Opts.value (workDir </> "models")
         <> Opts.help "The directory containing model(s)"
   input <-
     Opts.strArgument $
