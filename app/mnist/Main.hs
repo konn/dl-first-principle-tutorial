@@ -195,9 +195,8 @@ doTrain g TrainOpts {..} = do
       puts $ printf "** Batch %d started." epoch
       net' :> rest <-
         S.fold (flip (train @28 params)) net id $
-          S.chain (const $ puts "Processing batch") $
-            S.map (fst . U.unzip) $
-              S.splitAt numBatches batches
+          S.map (fst . U.unzip) $
+            S.splitAt numBatches batches
       testAcc :!: testData' <- calcTestAccuracy numTests batchSize net' tests
       puts $ printf "Test Accuracy: %f%%" $ testAcc * 100
       pure (net' :!: (rest :!: testData'))
