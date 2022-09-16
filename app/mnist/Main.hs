@@ -240,7 +240,8 @@ calcTestAccuracy nn =
           ans = unMat $ evalBatchNN nn $ fromRows inps
        in M.sum
             ( M.zipWith (\l r -> if l == r then 1.0 else 0.0) expect $
-                M.map (inferDigit . fromVec . unsafeToVec) $ M.outerSlices ans
+                M.map (inferDigit . fromVec . unsafeToVec) $
+                  M.outerSlices ans
             )
             / fromIntegral len
 
@@ -278,12 +279,12 @@ readMNISTDataDir dir = do
     ( fromIntegral columnCount /= pixelSize
         || fromIntegral rowCount /= pixelSize
     )
-    $ error $
-      printf
-        "%s: Input image must be 28x28, but got %dx%d"
-        dir
-        rowCount
-        columnCount
+    $ error
+    $ printf
+      "%s: Input image must be 28x28, but got %dx%d"
+      dir
+      rowCount
+      columnCount
   let imgs' = S.map (toMNISTInput . unsafeToMat) imgs
   pure (fromIntegral labelCount, S.zip imgs' labels)
 
@@ -329,9 +330,9 @@ cmdP =
       Opts.subparser $
         mconcat
           [ Opts.command "train" $
-              Opts.info (Train <$> trainOptsP) (Opts.progDesc "Train network for digit recognition")
+              Opts.info (Train <$> trainOptsP <**> Opts.helper) (Opts.progDesc "Train network for digit recognition")
           , Opts.command "recognise" $
-              Opts.info (Recognise <$> recogniseOptsP) (Opts.progDesc "Run network to recognise hand-written digit.")
+              Opts.info (Recognise <$> recogniseOptsP <**> Opts.helper) (Opts.progDesc "Run network to recognise hand-written digit.")
           ]
 
 data TrainOpts = TrainOpts
@@ -349,7 +350,8 @@ trainOptsP :: Opts.Parser TrainOpts
 trainOptsP = do
   epochs <-
     Opts.option Opts.auto $
-      Opts.short 'n' <> Opts.long "epochs"
+      Opts.short 'n'
+        <> Opts.long "epochs"
         <> Opts.value 10
         <> Opts.showDefault
         <> Opts.metavar "N"
@@ -365,7 +367,8 @@ trainOptsP = do
   outputInterval <-
     optional $
       Opts.option Opts.auto $
-        Opts.long "interval" <> Opts.short 'I'
+        Opts.long "interval"
+          <> Opts.short 'I'
           <> Opts.help "Output interval"
   batchSize <-
     Opts.option Opts.auto $
@@ -376,19 +379,22 @@ trainOptsP = do
         <> Opts.help "Mini batch size"
   modelDir <-
     Opts.strOption $
-      Opts.long "models" <> Opts.short 'M'
+      Opts.long "models"
+        <> Opts.short 'M'
         <> Opts.metavar "DIR"
         <> Opts.value (workDir </> "models")
         <> Opts.showDefault
         <> Opts.help "The directory to save the trained model(s)."
   trainDataDir <-
     Opts.strOption $
-      Opts.long "train-set" <> Opts.metavar "DIR"
+      Opts.long "train-set"
+        <> Opts.metavar "DIR"
         <> Opts.help "The directory containing training dataset; it must have images.mnist and labels.mnist"
         <> Opts.value ("data" </> "mnist" </> "train")
   testDataDir <-
     Opts.strOption $
-      Opts.long "test-set" <> Opts.metavar "DIR"
+      Opts.long "test-set"
+        <> Opts.metavar "DIR"
         <> Opts.help "The directory containing test dataset; it must have images.mnist and labels.mnist"
         <> Opts.value ("data" </> "mnist" </> "test")
   pure TrainOpts {..}
@@ -400,7 +406,9 @@ recogniseOptsP :: Opts.Parser RecognitionOpts
 recogniseOptsP = do
   modelDir <-
     Opts.strOption $
-      Opts.short 'M' <> Opts.long "models" <> Opts.metavar "DIR"
+      Opts.short 'M'
+        <> Opts.long "models"
+        <> Opts.metavar "DIR"
         <> Opts.value (workDir </> "models")
         <> Opts.help "The directory containing model(s)"
   input <-
