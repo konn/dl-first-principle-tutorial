@@ -189,7 +189,6 @@ doTrain seed TrainOpts {..} = do
         ( \(net :!: es) ecount -> do
             let !es' = es + ecount
             puts $ printf "** Epoch #%d..%d Started." es es'
-            (_, trainDataSet) <- readMNISTDataDir trainDataDir
             net' <-
               appEndoM
                 ( mconcat $
@@ -197,6 +196,7 @@ doTrain seed TrainOpts {..} = do
                       ecount
                       ( EndoM $ \nets -> do
                           g <- thawGen seed
+                          (_, trainDataSet) <- readMNISTDataDir trainDataDir
                           let trainBatches =
                                 trainDataSet
                                   & shuffleBuffered g shuffWindow
