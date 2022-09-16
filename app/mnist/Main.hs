@@ -31,8 +31,7 @@ import Control.Lens hiding (Snoc, (:>))
 import Control.Monad (when)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Resource (MonadResource, ResourceT, runResourceT)
-import Control.Subcategory.Linear (FromVec (fromVec), HasSize (Size, toVec), UMat, UVec, Vec, asColumn, dimVal, unMat, unVec, unsafeToMat, unsafeToVec)
-import qualified Data.Bifunctor as Bi
+import Control.Subcategory.Linear (unsafeToMat)
 import qualified Data.ByteString as BS
 import qualified Data.DList as DL
 import Data.Foldable (fold)
@@ -44,7 +43,6 @@ import Data.Massiv.Array.IO (readImageAuto)
 import Data.Maybe (fromMaybe)
 import Data.Monoid (Dual (..), Endo (..), Sum (..))
 import qualified Data.Persist as Persist
-import Data.Proxy (Proxy)
 import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.MNIST
@@ -182,10 +180,9 @@ doTrain g TrainOpts {..} = do
         (blk, resid) = epochs `quotRem` intvl
         epcs =
           foldr (:) (replicate (min 1 resid) resid) $ replicate blk intvl
-    (numTests, tests) <- readMNISTDataDir testDataDir
+    (numTests, tests0) <- readMNISTDataDir testDataDir
     puts $ printf "# %d test datasets given" numTests
-    testsArray <- M.sunfoldrM S.uncons tests
-    let !testAcc = calcTestAccuracy batchedNN testsArray
+    !testAcc <- calcTestAccuracy batchSize batchedNN tests0
     puts $ printf "Initial Test Accuracy: %f%%" $ testAcc * 100
     void $
       ifoldlM
@@ -194,7 +191,8 @@ doTrain g TrainOpts {..} = do
                 !endEpoch = begEpoch + ecount
             puts $ printf "** Epoch #%d..%d Started." begEpoch endEpoch
             let !net' = appEndo (getDual $ fold (replicate ecount epochFunc)) net
-                !acc = calcTestAccuracy net' testsArray
+            (_, tests) <- readMNISTDataDir testDataDir
+            !acc <- calcTestAccuracy batchSize batchedNN tests
             puts $ printf "Test Accuracy: %f%%" $ acc * 100
             mask_ $ do
               liftIO $ BS.writeFile modelFile $ Persist.encode net'
@@ -218,44 +216,22 @@ chunksOfVector n =
     >>> SS.mapped
       (L.impurely S.foldM (L.vectorM @_ @U.Vector))
 
-data SomeVector a where
-  MkSomeVector :: KnownNat n => UVec n a -> SomeVector a
-
-toSomeVector :: (U.Unbox a, M.Load r M.Ix1 a) => M.Vector r a -> SomeVector a
-toSomeVector xs =
-  let us = M.computeP xs
-   in case someNatVal $ fromIntegral $ M.unSz $ M.size us of
-        SomeNat (_ :: Proxy n) -> MkSomeVector @n $ unsafeToVec us
-
 calcTestAccuracy ::
-  M.Load r M.Ix1 (MNISTInput PixelSize, Digit) =>
+  PrimMonad m =>
+  -- | Batchsize
+  Int ->
   NeuralNetwork 784 BatchedNet 10 Double ->
-  M.Vector r (MNISTInput PixelSize, Digit) ->
-  Double
-calcTestAccuracy nn =
-  toSomeVector >>> \case
-    MkSomeVector (v :: UVec n (MNISTInput PixelSize, Digit)) ->
-      let len = dimVal @n
-          (inps, unVec -> expect) = unzipVec v
-          ans = unMat $ evalBatchNN nn $ fromRows inps
-       in M.sum
-            ( M.zipWith (\l r -> if l == r then 1.0 else 0.0) expect $
-                M.map (inferDigit . fromVec . unsafeToVec) $
-                  M.outerSlices ans
-            )
-            / fromIntegral len
-
-fromRows :: forall m t a r. (HasSize t, U.Unbox a, M.Source r (t a)) => Vec r m (t a) -> UMat m (Size t) a
-fromRows =
-  unsafeToMat
-    . M.computeP
-    . M.concat' 1
-    . M.map (unMat . asColumn . toVec)
-    . unVec
-
-unzipVec :: (U.Unbox a, U.Unbox b) => UVec n (a, b) -> (Vec M.D n a, Vec M.D n b)
-unzipVec =
-  unVec >>> M.unzip >>> Bi.bimap unsafeToVec unsafeToVec
+  Stream (Of (MNISTInput PixelSize, Digit)) (ResourceT m) r ->
+  ResourceT m Double
+calcTestAccuracy n net =
+  chunksOfVector n
+    >>> S.map
+      ( \dataSet ->
+          let (inps, outs) = U.unzip dataSet
+              ys' = predicts net inps
+           in accuracy outs ys'
+      )
+    >>> L.purely S.fold_ L.mean
 
 puts :: MonadIO m => String -> m ()
 puts = liftIO . putStrLn
