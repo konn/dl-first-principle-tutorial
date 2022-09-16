@@ -28,13 +28,13 @@ library
       Control.Subcategory.Linear
       Data.Format.MNIST
       Data.Format.SpaceSeparated
-      Data.Vector.Orphans
       DeepLearning.Circles
       DeepLearning.Circles.Types
       DeepLearning.Iris
       DeepLearning.MNIST
       DeepLearning.NeuralNetowrk.HigherKinded
       DeepLearning.NeuralNetowrk.Massiv
+      DeepLearning.NeuralNetowrk.Massiv.Types
       Numeric.Function.Activation
       Numeric.Optimisation
       Numeric.VectorSpace

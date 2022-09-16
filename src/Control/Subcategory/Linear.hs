@@ -13,6 +13,7 @@
 {-# LANGUAGE MagicHash #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
@@ -24,95 +25,95 @@
 {-# OPTIONS_GHC -Wno-redundant-constraints #-}
 {-# OPTIONS_GHC -fplugin GHC.TypeLits.KnownNat.Solver #-}
 
-module Control.Subcategory.Linear
-  ( Vec (),
-    unsafeToVec,
-    unVec,
-    type UVec,
-    type Vec1,
-    type Vec2,
-    type Vec3,
-    type Vec4,
-    repeatVec,
-    asColumn,
-    asRow,
+module Control.Subcategory.Linear (
+  Vec (),
+  unsafeToVec,
+  unVec,
+  type UVec,
+  type Vec1,
+  type Vec2,
+  type Vec3,
+  type Vec4,
+  repeatVec,
+  asColumn,
+  asRow,
 
-    -- ** Vector operations
-    (^+^),
-    (^-^),
-    (*^),
-    (^*),
-    (+^),
-    (^+),
-    (-^),
-    (^-),
-    (^/),
-    (^.^),
-    normVec,
-    quadranceVec,
+  -- ** Vector operations
+  (^+^),
+  (^-^),
+  (*^),
+  (^*),
+  (+^),
+  (^+),
+  (-^),
+  (^-),
+  (^/),
+  (^.^),
+  normVec,
+  quadranceVec,
 
-    -- ** Matrix operations
-    Mat (),
-    unsafeToMat,
-    unMat,
-    SomeBatch (..),
-    splitColAt,
-    splitRowAt,
-    UMat,
-    rowAt,
-    columnAt,
-    duplicateAsRows,
-    duplicateAsCols,
-    repeatMat,
-    (!+!),
-    (!+),
-    (!-!),
-    (!-),
-    (!.!),
-    (!*!),
-    (!/!),
-    (!^),
-    (!*),
-    (*!),
-    (*!!),
-    (!!*),
-    (!!/),
-    quadranceMat,
-    normMat,
+  -- ** Matrix operations
+  Mat (),
+  unsafeToMat,
+  unMat,
+  SomeBatch (..),
+  splitColAt,
+  splitRowAt,
+  UMat,
+  rowAt,
+  columnAt,
+  duplicateAsRows,
+  duplicateAsCols,
+  repeatMat,
+  (!+!),
+  (!+),
+  (!-!),
+  (!-),
+  (!.!),
+  (!*!),
+  (!/!),
+  (!^),
+  (!*),
+  (*!),
+  (*!!),
+  (!!*),
+  (!!/),
+  quadranceMat,
+  normMat,
 
-    -- * Conversion between vectors
-    HasSize (..),
-    GHasSize (),
-    FromVec (..),
-    genericFromVec,
-    genericSinkToVector,
-    GFromVec (),
-    computeV,
-    delayV,
-    computeM,
-    delayM,
-    sumRows,
-    sumCols,
-    dimVal,
-    trans,
-    duplicateAsCols',
-    (!*:),
-    (!*!:),
-    sumRows',
-    sumCols',
-    replicateMatA,
-    generateMatA,
-    generateMat,
-    replicateVecA,
-    generateVecA,
-    generateVec,
-    fromBatchData,
-    fromRowMat,
+  -- * Conversion between vectors
+  HasSize (..),
+  GHasSize (),
+  FromVec (..),
+  genericFromVec,
+  genericSinkToVector,
+  GFromVec (),
+  computeV,
+  delayV,
+  computeM,
+  delayM,
+  sumRows,
+  sumCols,
+  dimVal,
+  trans,
+  duplicateAsCols',
+  (!*:),
+  (!*!:),
+  sumRows',
+  sumCols',
+  replicateMatA,
+  generateMatA,
+  generateMat,
+  replicateVecA,
+  generateVecA,
+  generateVec,
+  fromBatchData,
+  withDataPair,
+  fromRowMat,
 
-    -- ** Re-exports
-    module Numeric.VectorSpace,
-  )
-where
+  -- ** Re-exports
+  module Numeric.VectorSpace,
+) where
 
 import Control.DeepSeq (NFData)
 import Control.Monad.ST
@@ -146,6 +147,7 @@ import qualified Linear.V as LinearV
 import Massiv.Persist
 import Numeric.Backprop
 import Numeric.VectorSpace
+import Type.Reflection (Typeable)
 
 infixl 6 ^+^, ^-^, ^+, +^, ^-, -^
 
@@ -538,6 +540,8 @@ type Vec4 = UVec 4
 newtype Vec r n a = Vec {runVec :: M.Vector r a}
   deriving (Generic)
 
+deriving instance Eq (M.Vector r a) => Eq (Vec r n a)
+
 unsafeToVec :: forall n r a. M.Vector r a -> Vec r n a
 {-# INLINE unsafeToVec #-}
 unsafeToVec = Vec
@@ -577,6 +581,8 @@ type UMat = Mat M.U
 
 newtype Mat r (n :: Nat) (m :: Nat) a = Mat {runMat :: M.Array r M.Ix2 a}
   deriving (Generic, Generic1)
+
+deriving instance Eq (M.Matrix r a) => Eq (Mat r n m a)
 
 unsafeToMat :: forall n m r a. M.Matrix r a -> Mat r n m a
 {-# INLINE unsafeToMat #-}
@@ -1063,7 +1069,47 @@ fromBatchData ts =
       MkSomeBatch @m $
         Mat $
           M.computeP $
-            M.concat' 1 $ V.map (runMat . asColumn . toVec) $ G.convert ts
+            M.concat' 1 $
+              V.map (runMat . asColumn . toVec) $
+                G.convert ts
+
+withDataPair ::
+  forall t u a v r.
+  ( G.Vector v (t a, u a)
+  , G.Vector v (t a)
+  , G.Vector v (u a)
+  , Typeable v
+  , U.Unbox (t a)
+  , U.Unbox (u a)
+  , HasSize t
+  , HasSize u
+  , U.Unbox a
+  , M.Load (VM.ARepr v) M.Ix1 (t a)
+  , M.Load (VM.ARepr v) M.Ix1 (u a)
+  ) =>
+  v (t a, u a) ->
+  ( forall m.
+    KnownNat m =>
+    (UMat m (Size t) a, UMat m (Size u) a) ->
+    r
+  ) ->
+  r
+withDataPair dats act =
+  let (ins, outs) = G.unzip dats
+      m = G.length ins
+      inMat =
+        M.computeP $
+          M.concat' 1 $
+            M.map (runMat . asColumn . toVec) $
+              VM.fromVector' @_ @_ @_ @M.U M.Par (Sz1 m) ins
+      outMat =
+        M.computeP $
+          M.concat' 1 $
+            M.map (runMat . asColumn . toVec) $
+              VM.fromVector' @_ @_ @_ @M.U M.Par (Sz1 m) outs
+   in case someNatVal $ fromIntegral m of
+        SomeNat (_ :: Proxy m) ->
+          act @m (Mat inMat, Mat outMat)
 
 newtype instance U.Vector (UVec n a) = Vector_UVec {getUVecVector :: U.Vector a}
 

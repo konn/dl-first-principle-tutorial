@@ -7,23 +7,21 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module DeepLearning.Circles
-  ( module DeepLearning.Circles.Types,
-    trainByGradientDescent,
-    trainByAdam,
-    AdamParams (..),
-    predict,
-    predictionAccuracy,
-    pixelateCluster,
-  )
-where
+module DeepLearning.Circles (
+  module DeepLearning.Circles.Types,
+  trainByGradientDescent,
+  trainByAdam,
+  AdamParams (..),
+  predict,
+  predictionAccuracy,
+  pixelateCluster,
+) where
 
 import Control.Arrow ((>>>))
 import Control.Lens (view, (^.))
 import Control.Subcategory (czipWith)
-import Control.Subcategory.Linear (SomeBatch (..), UMat, VectorSpace (sumS), computeM, dimVal, fromBatchData, rowAt, splitRowAt, unVec)
+import Control.Subcategory.Linear (SomeBatch (..), UMat, VectorSpace (sumS), dimVal, fromBatchData, rowAt, unVec, withDataPair)
 import Data.Function ((&))
-import Data.Functor.Product (Product (..))
 import qualified Data.Massiv.Array as M
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.Circles.Types
@@ -70,19 +68,17 @@ decodeCluster p =
 predictionAccuracy ::
   NeuralNetwork 2 ls 1 Double -> U.Vector ClusteredPoint -> Double
 predictionAccuracy = withKnownNeuralNetwork $ \nn dats ->
-  let adjusted = U.map (\ClusteredPoint {..} -> Pair coord $ clusterNum cluster) dats
-   in case fromBatchData adjusted of
-        MkSomeBatch (inOuts :: UMat m 3 a) ->
-          let (ins, outs) = splitRowAt @2 inOuts
-              outs' = evalBatchNN nn $ computeM ins
-              n = fromIntegral $ dimVal @m
-           in sumS
-                ( czipWith
-                    (\l r -> if decodeCluster l == decodeCluster r then 1.0 else 0.0)
-                    (computeM outs)
-                    outs'
-                )
-                / n
+  let adjusted = U.map (\ClusteredPoint {..} -> (coord, clusterNum cluster)) dats
+   in withDataPair adjusted $ \(ins :: UMat m i a, outs) ->
+        let outs' = evalBatchNN nn ins
+            n = fromIntegral $ dimVal @m
+         in sumS
+              ( czipWith
+                  (\l r -> if decodeCluster l == decodeCluster r then 1.0 else 0.0)
+                  outs
+                  outs'
+              )
+              / n
 
 pixelateCluster ::
   (N b ~ Double, Dia.V b ~ V2, Typeable Double, Dia.Renderable (Dia.Path V2 Double) b) =>
