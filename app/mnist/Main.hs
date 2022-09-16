@@ -26,6 +26,7 @@ module Main (main) where
 import Control.Applicative (optional, (<**>))
 import Control.Arrow
 import Control.Exception (evaluate)
+import Control.Foldl (EndoM (..))
 import qualified Control.Foldl as L
 import Control.Lens hiding (Snoc, (:>))
 import Control.Monad (when)
@@ -34,15 +35,16 @@ import Control.Monad.Trans.Resource (MonadResource, ResourceT, runResourceT)
 import Control.Subcategory.Linear (unsafeToMat)
 import qualified Data.ByteString as BS
 import qualified Data.DList as DL
-import Data.Foldable (fold)
+import Data.Foldable (foldlM)
 import Data.Functor (void)
 import Data.Functor.Of (Of (..))
 import Data.Massiv.Array (PrimMonad, Sz (..))
 import qualified Data.Massiv.Array as M
 import Data.Massiv.Array.IO (readImageAuto)
 import Data.Maybe (fromMaybe)
-import Data.Monoid (Dual (..), Endo (..), Sum (..))
+import Data.Monoid (Sum (..))
 import qualified Data.Persist as Persist
+import Data.Strict.Tuple (Pair (..))
 import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
 import qualified Data.Vector.Unboxed as U
 import DeepLearning.MNIST
@@ -57,7 +59,7 @@ import qualified Streaming.Prelude as S
 import Streaming.Shuffle
 import System.FilePath ((</>))
 import System.IO (BufferMode (LineBuffering), hSetBuffering, stdout)
-import System.Random.Stateful (RandomGenM, globalStdGen)
+import System.Random.Stateful (FrozenGen (MutableGen, freezeGen, thawGen), RandomGenM, globalStdGen)
 import Text.Printf (printf)
 import UnliftIO (mask_)
 import UnliftIO.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
@@ -66,7 +68,9 @@ main :: IO ()
 main = do
   hSetBuffering stdout LineBuffering
   Opts.execParser cmdP >>= \case
-    Train opts -> doTrain globalStdGen opts
+    Train opts -> do
+      g <- freezeGen globalStdGen
+      doTrain g opts
     Recognise opts -> recognise opts
 
 batchedName :: FilePath
@@ -132,11 +136,16 @@ adams = AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-16}
 
 doTrain ::
   forall m g r.
-  (MonadIO m, M.MonadUnliftIO m, RandomGenM g r (ResourceT m), PrimMonad m) =>
+  ( MonadIO m
+  , M.MonadUnliftIO m
+  , PrimMonad m
+  , FrozenGen g (ResourceT m)
+  , RandomGenM (MutableGen g (ResourceT m)) r (ResourceT m)
+  ) =>
   g ->
   TrainOpts ->
   m ()
-doTrain g TrainOpts {..} = do
+doTrain seed TrainOpts {..} = do
   puts "* Training Mode"
   now <- liftIO getZonedTime
   createDirectoryIfMissing True modelDir
@@ -153,7 +162,7 @@ doTrain g TrainOpts {..} = do
         randomNetwork globalStdGen batchedNetSeed
 
   runResourceT $ do
-    (numTrains, trainDataSet) <- readMNISTDataDir trainDataDir
+    (numTrains, _) <- readMNISTDataDir trainDataDir
     let (numBat0, r) = numTrains `quotRem` batchSize
         numBatches
           | r == 0 = numBat0
@@ -167,16 +176,7 @@ doTrain g TrainOpts {..} = do
         batchSize
     let shuffWindow = batchSize * max 1 (numBatches `quot` 100)
 
-        trainBatches =
-          trainDataSet
-            & shuffleBuffered g shuffWindow
-            & S.map (\(a, d) -> ((a, toDigitVector d), d))
-            & chunksOfVector batchSize
-    epochFunc <-
-      S.foldMap_
-        (Dual . Endo . train params . fst . U.unzip)
-        trainBatches
-    let intvl = fromMaybe 1 outputInterval
+        intvl = fromMaybe 1 outputInterval
         (blk, resid) = epochs `quotRem` intvl
         epcs =
           foldr (:) (replicate (min 1 resid) resid) $ replicate blk intvl
@@ -185,21 +185,38 @@ doTrain g TrainOpts {..} = do
     !testAcc <- calcTestAccuracy batchSize batchedNN tests0
     puts $ printf "Initial Test Accuracy: %f%%" $ testAcc * 100
     void $
-      ifoldlM
-        ( \outN net ecount -> do
-            let !begEpoch = batchSize * outN
-                !endEpoch = begEpoch + ecount
-            puts $ printf "** Epoch #%d..%d Started." begEpoch endEpoch
-            let !net' = appEndo (getDual $ fold (replicate ecount epochFunc)) net
+      foldlM
+        ( \(net :!: es) ecount -> do
+            let !es' = es + ecount
+            puts $ printf "** Epoch #%d..%d Started." es es'
+            (_, trainDataSet) <- readMNISTDataDir trainDataDir
+            net' <-
+              appEndoM
+                ( mconcat $
+                    replicate
+                      ecount
+                      ( EndoM $ \nets -> do
+                          g <- thawGen seed
+                          let trainBatches =
+                                trainDataSet
+                                  & shuffleBuffered g shuffWindow
+                                  & S.map (\(a, d) -> ((a, toDigitVector d), d))
+                                  & chunksOfVector batchSize
+                          S.fold_ (flip (train @28 params)) nets id $
+                            S.map (fst . U.unzip) trainBatches
+                      )
+                )
+                net
+
             (_, tests) <- readMNISTDataDir testDataDir
             !acc <- calcTestAccuracy batchSize batchedNN tests
             puts $ printf "Test Accuracy: %f%%" $ acc * 100
             mask_ $ do
               liftIO $ BS.writeFile modelFile $ Persist.encode net'
               puts $ printf "Model file written to: %s" modelFile
-            pure net'
+            pure (net' :!: es')
         )
-        batchedNN
+        (batchedNN :!: 0)
         epcs
   where
     modelFile = modelDir </> batchedName
