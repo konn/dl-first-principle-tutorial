@@ -223,7 +223,7 @@ doTrain seed TrainOpts {..} = do
     params =
       MNISTParams
         { timeStep = gamma
-        , dumpingFactor = 0.01
+        , dumpingFactor = 0.1
         , adamParams = adams
         }
 
