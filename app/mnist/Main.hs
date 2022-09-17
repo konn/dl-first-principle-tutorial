@@ -47,6 +47,7 @@ import qualified Data.Persist as Persist
 import Data.Strict.Tuple (Pair (..))
 import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
 import qualified Data.Vector.Unboxed as U
+import Data.Word (Word32)
 import DeepLearning.MNIST
 import DeepLearning.NeuralNetowrk.Massiv hiding (Train, scale)
 import GHC.TypeNats
@@ -72,6 +73,68 @@ main = do
       g <- freezeGen globalStdGen
       doTrain g opts
     Recognise opts -> recognise opts
+    Resample opts -> resample opts
+
+resample :: ResampleOpts -> IO ()
+resample ResampleOpts {..} = do
+  let inTrain = dataDir </> "train"
+      outTrain = dataDir </> "train_mini"
+  pure ()
+
+data Cmd
+  = Train TrainOpts
+  | Recognise RecognitionOpts
+  | Resample ResampleOpts
+  deriving (Show, Eq, Ord, Generic)
+
+cmdP :: Opts.ParserInfo Cmd
+cmdP =
+  Opts.info (p <**> Opts.helper) $
+    mconcat
+      [ Opts.header "circles - hidden layer demo (Day 2)"
+      , Opts.progDesc "Binary point classification with hidden layers"
+      ]
+  where
+    p =
+      Opts.subparser $
+        mconcat
+          [ Opts.command "train" $
+              Opts.info (Train <$> trainOptsP <**> Opts.helper) (Opts.progDesc "Train network for digit recognition")
+          , Opts.command "recognise" $
+              Opts.info (Recognise <$> recogniseOptsP <**> Opts.helper) (Opts.progDesc "Run network to recognise hand-written digit.")
+          , Opts.command "resample" $
+              Opts.info
+                (Resample <$> resampleOptsP <**> Opts.helper)
+                (Opts.progDesc "resmples train/test datasets")
+          ]
+
+resampleOptsP :: Opts.Parser ResampleOpts
+resampleOptsP = do
+  testDataSize <-
+    Opts.option Opts.auto $
+      Opts.long "test-size"
+        <> Opts.value 10
+        <> Opts.showDefault
+        <> Opts.help "The size of test dataset after resampling"
+  trainDataSize <-
+    Opts.option Opts.auto $
+      Opts.long "train-size"
+        <> Opts.value 10
+        <> Opts.showDefault
+        <> Opts.help "The size of train dataset after resampling"
+  dataDir <-
+    Opts.strOption $
+      Opts.short 'd'
+        <> Opts.long "data-dir"
+        <> Opts.metavar "DIR"
+        <> Opts.value ("data" </> "mnist")
+  pure ResampleOpts {..}
+
+data ResampleOpts = ResampleOpts
+  { testDataSize, trainDataSize :: !Word32
+  , dataDir :: !FilePath
+  }
+  deriving (Show, Eq, Ord, Generic)
 
 batchedName :: FilePath
 batchedName = "batched.dat"
@@ -139,8 +202,8 @@ doTrain ::
   ( MonadIO m
   , M.MonadUnliftIO m
   , PrimMonad m
-  , FrozenGen g (ResourceT m)
-  , RandomGenM (MutableGen g (ResourceT m)) r (ResourceT m)
+  , FrozenGen g m
+  , RandomGenM (MutableGen g m) r (ResourceT m)
   ) =>
   g ->
   TrainOpts ->
@@ -161,41 +224,45 @@ doTrain seed TrainOpts {..} = do
         puts "# No model found. Initialising with seed..."
         randomNetwork globalStdGen batchedNetSeed
 
-  runResourceT $ do
-    (numTrains, _) <- readMNISTDataDir trainDataDir
-    let (numBat0, r) = numTrains `quotRem` batchSize
-        numBatches
-          | r == 0 = numBat0
-          | otherwise = numBat0 + 1
+  (numTrains, _) <-
+    runResourceT $ readMNISTDataDir trainDataDir
+  let (numBat0, r) = numTrains `quotRem` batchSize
+      numBatches
+        | r == 0 = numBat0
+        | otherwise = numBat0 + 1
 
-    puts $
-      printf
-        "# %d training data given, divided into %d minibatches, each of size %d"
-        numTrains
-        numBatches
-        batchSize
-    let shuffWindow = batchSize * max 1 (numBatches `quot` 100)
+  puts $
+    printf
+      "# %d training data given, divided into %d minibatches, each of size %d"
+      numTrains
+      numBatches
+      batchSize
+  let shuffWindow = batchSize * max 1 (numBatches `quot` 100)
 
-        intvl = fromMaybe 1 outputInterval
-        (blk, resid) = epochs `quotRem` intvl
-        epcs =
-          foldr (:) (replicate (min 1 resid) resid) $ replicate blk intvl
+      intvl = fromMaybe 1 outputInterval
+      (blk, resid) = epochs `quotRem` intvl
+      epcs =
+        foldr (:) (replicate (min 1 resid) resid) $ replicate blk intvl
+
+  void $ runResourceT $ do
     (numTests, tests0) <- readMNISTDataDir testDataDir
     puts $ printf "# %d test datasets given" numTests
     !testAcc <- calcTestAccuracy batchSize batchedNN tests0
     puts $ printf "Initial Test Accuracy: %f%%" $ testAcc * 100
-    void $
-      foldlM
-        ( \(net :!: es) ecount -> do
-            let !es' = es + ecount
-            puts $ printf "** Epoch #%d..%d Started." es es'
-            !net' <-
-              appEndoM
-                ( fold $
-                    replicate
-                      ecount
-                      ( EndoM $ \ !nets -> do
-                          g <- thawGen seed
+    pure numTests
+  void $
+    foldlM
+      ( \(net :!: es) ecount -> do
+          let !es' = es + ecount
+          puts $ printf "** Epoch #%d..%d Started." es es'
+          !net' <-
+            appEndoM
+              ( fold $
+                  replicate
+                    ecount
+                    ( EndoM $ \ !nets -> do
+                        g <- thawGen seed
+                        runResourceT $ do
                           (_, !trainDataSet) <- readMNISTDataDir trainDataDir
                           let !trainBatches =
                                 trainDataSet
@@ -204,20 +271,20 @@ doTrain seed TrainOpts {..} = do
                                   & chunksOfVector batchSize
                           S.fold_ (flip (train @28 params)) nets id $
                             S.map (fst . U.unzip) trainBatches
-                      )
-                )
-                net
-
+                    )
+              )
+              net
+          runResourceT $ do
             (_, tests) <- readMNISTDataDir testDataDir
             !acc <- calcTestAccuracy batchSize net' tests
             puts $ printf "Test Accuracy: %f%%" $ acc * 100
-            mask_ $ do
-              liftIO $ BS.writeFile modelFile $ Persist.encode net'
-              puts $ printf "Model file written to: %s" modelFile
-            pure (net' :!: es')
-        )
-        (batchedNN :!: 0)
-        epcs
+          mask_ $ do
+            liftIO $ BS.writeFile modelFile $ Persist.encode net'
+            puts $ printf "Model file written to: %s" modelFile
+          pure (net' :!: es')
+      )
+      (batchedNN :!: 0)
+      epcs
   where
     modelFile = modelDir </> batchedName
     params =
@@ -305,28 +372,6 @@ plainNetSeed =
 
 data Net = BatchNormed | Plain
   deriving (Show, Eq, Ord, Generic)
-
-data Cmd
-  = Train TrainOpts
-  | Recognise RecognitionOpts
-  deriving (Show, Eq, Ord, Generic)
-
-cmdP :: Opts.ParserInfo Cmd
-cmdP =
-  Opts.info (p <**> Opts.helper) $
-    mconcat
-      [ Opts.header "circles - hidden layer demo (Day 2)"
-      , Opts.progDesc "Binary point classification with hidden layers"
-      ]
-  where
-    p =
-      Opts.subparser $
-        mconcat
-          [ Opts.command "train" $
-              Opts.info (Train <$> trainOptsP <**> Opts.helper) (Opts.progDesc "Train network for digit recognition")
-          , Opts.command "recognise" $
-              Opts.info (Recognise <$> recogniseOptsP <**> Opts.helper) (Opts.progDesc "Run network to recognise hand-written digit.")
-          ]
 
 data TrainOpts = TrainOpts
   { epochs :: !Int
