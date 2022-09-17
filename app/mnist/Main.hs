@@ -78,9 +78,9 @@ batchedName = "batched.dat"
 
 recognise :: RecognitionOpts -> IO ()
 recognise RecognitionOpts {..} = do
-  let inFile = modelDir </> batchedName
-  putStrLn $ "Recognising: " <> inFile
-  batchedNet <- readNetworkFile @BatchedNet inFile
+  let modelPath = modelDir </> batchedName
+  putStrLn $ "Recognising: " <> input
+  batchedNet <- readNetworkFile @BatchedNet modelPath
 
   image <- fromGrayscaleImage <$> readImageAuto input
   when (M.size image /= Sz2 28 28) $
