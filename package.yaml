@@ -44,6 +44,7 @@ dependencies:
 - generic-lens
 - ghc-typelits-knownnat
 - ghc-typelits-presburger
+- heaps
 - hybrid-vectors
 - lens
 - linear

@@ -16,28 +16,35 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE NoStarIsType #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 
 module Main (main) where
 
 import Control.Applicative (optional, (<**>))
 import Control.Arrow
+import Control.DeepSeq (force)
 import Control.Exception (evaluate)
 import Control.Foldl (EndoM (..))
 import qualified Control.Foldl as L
 import Control.Lens hiding (Snoc, (:>))
 import Control.Monad (when)
 import Control.Monad.IO.Class
-import Control.Monad.Trans.Resource (MonadResource, ResourceT, runResourceT)
-import Control.Subcategory.Linear (unsafeToMat)
+import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Resource (MonadResource (..))
+import qualified Control.Monad.Trans.Resource as MR
+import Control.Subcategory.Linear (UMat, unMat, unsafeToMat)
+import qualified Data.Bifunctor as Bi
 import qualified Data.ByteString as BS
 import qualified Data.DList as DL
 import Data.Foldable (fold, foldlM)
 import Data.Functor (void)
 import Data.Functor.Of (Of (..))
+import qualified Data.Heap as H
 import Data.Massiv.Array (PrimMonad, Sz (..))
 import qualified Data.Massiv.Array as M
 import Data.Massiv.Array.IO (readImageAuto)
@@ -47,7 +54,7 @@ import qualified Data.Persist as Persist
 import Data.Strict.Tuple (Pair (..))
 import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
 import qualified Data.Vector.Unboxed as U
-import Data.Word (Word32)
+import Data.Word (Word32, Word8)
 import DeepLearning.MNIST
 import DeepLearning.NeuralNetowrk.Massiv hiding (Train, scale)
 import GHC.TypeNats
@@ -60,10 +67,12 @@ import qualified Streaming.Prelude as S
 import Streaming.Shuffle
 import System.FilePath ((</>))
 import System.IO (BufferMode (LineBuffering), hSetBuffering, stdout)
-import System.Random.Stateful (FrozenGen (MutableGen, freezeGen, thawGen), RandomGenM, globalStdGen)
+import System.Random.Stateful (FrozenGen (MutableGen, freezeGen, thawGen), RandomGenM, globalStdGen, uniformRM)
 import Text.Printf (printf)
 import UnliftIO (mask_)
 import UnliftIO.Directory (copyFile, createDirectoryIfMissing, doesFileExist)
+import qualified UnliftIO.Exception as UIO
+import UnliftIO.Resource
 
 main :: IO ()
 main = do
@@ -73,13 +82,73 @@ main = do
       g <- freezeGen globalStdGen
       doTrain g opts
     Recognise opts -> recognise opts
-    Resample opts -> resample opts
+    Resample opts -> do
+      g <- freezeGen globalStdGen
+      resample g opts
 
-resample :: ResampleOpts -> IO ()
-resample ResampleOpts {..} = do
-  let inTrain = dataDir </> "train"
-      outTrain = dataDir </> "train_mini"
+resample ::
+  ( FrozenGen g IO
+  , RandomGenM (MutableGen g IO) r (ResourceT IO)
+  ) =>
+  g ->
+  ResampleOpts ->
+  IO ()
+resample seed ResampleOpts {..} = do
+  g <- thawGen seed
+  resampleWith g (dataDir </> "train") (dataDir </> "train_mini") trainDataSize
+  resampleWith g (dataDir </> "test") (dataDir </> "test_mini") testDataSize
+
+instance (MonadResource m, Functor f) => MonadResource (Stream f m) where
+  liftResourceT = lift . MR.liftResourceT
+  {-# INLINE liftResourceT #-}
+
+resampleWith ::
+  (M.MonadUnliftIO f, RandomGenM g r (ResourceT f)) =>
+  g ->
+  FilePath ->
+  FilePath ->
+  Word32 ->
+  f ()
+resampleWith g inDir outDir targetSize = do
+  createDirectoryIfMissing True outDir
+  runResourceT $ do
+    (_, stream) <- readMNISTDataDir inDir
+    let imgHeader =
+          ImageFileHeader
+            { imageCount = targetSize
+            , rowCount = fromIntegral pixelSize
+            , columnCount = fromIntegral pixelSize
+            }
+        lblHeader = LabelFileHeader {labelCount = targetSize}
+    stream
+      & L.impurely
+        S.foldM_
+        (resevoirSample g (fromIntegral targetSize) $ S.each <$> L.generalize L.list)
+      & SS.effect
+      & S.unzip
+      & S.map unMat
+      & streamImageFile imgHeader
+      & Q.writeFile (outDir </> imagesFile)
+      & streamLabelFile lblHeader
+      & Q.writeFile (outDir </> labelsFile)
+
   pure ()
+
+resevoirSample :: RandomGenM g r m => g -> Int -> L.FoldM m a b -> L.FoldM m a b
+{-# INLINEABLE resevoirSample #-}
+resevoirSample g n l =
+  L.FoldM
+    step
+    (pure mempty)
+    (L.foldM (L.premapM (pure . H.payload) l))
+  where
+    step resevoir a = do
+      !w <- uniformRM (0.0 :: Double, 1) g
+      let !entry = H.Entry {priority = w, payload = a}
+          !res' = H.insert entry resevoir
+      if H.size res' <= n
+        then pure res'
+        else pure $! H.deleteMin res'
 
 data Cmd
   = Train TrainOpts
@@ -219,10 +288,10 @@ doTrain seed TrainOpts {..} = do
       then do
         puts "# Model file found. Resuming training..."
         copyFile modelFile (modelFile <> "." <> stamp <> ".bak")
-        readNetworkFile modelFile
+        UIO.evaluate . force =<< readNetworkFile modelFile
       else do
         puts "# No model found. Initialising with seed..."
-        randomNetwork globalStdGen batchedNetSeed
+        UIO.evaluate . force =<< randomNetwork globalStdGen batchedNetSeed
 
   (numTrains, _) <-
     runResourceT $ readMNISTDataDir trainDataDir
@@ -247,7 +316,8 @@ doTrain seed TrainOpts {..} = do
   void $ runResourceT $ do
     (numTests, tests0) <- readMNISTDataDir testDataDir
     puts $ printf "# %d test datasets given" numTests
-    !testAcc <- calcTestAccuracy batchSize batchedNN tests0
+    !testAcc <-
+      calcTestAccuracy batchSize batchedNN $ S.map (Bi.first toMNISTInput) tests0
     puts $ printf "Initial Test Accuracy: %f%%" $ testAcc * 100
     pure numTests
   void $
@@ -266,6 +336,7 @@ doTrain seed TrainOpts {..} = do
                           (_, !trainDataSet) <- readMNISTDataDir trainDataDir
                           let !trainBatches =
                                 trainDataSet
+                                  & S.map (Bi.first toMNISTInput)
                                   & shuffleBuffered g shuffWindow
                                   & S.map (\(a, d) -> ((a, toDigitVector d), d))
                                   & chunksOfVector batchSize
@@ -276,7 +347,9 @@ doTrain seed TrainOpts {..} = do
               net
           runResourceT $ do
             (_, tests) <- readMNISTDataDir testDataDir
-            !acc <- calcTestAccuracy batchSize net' tests
+            !acc <-
+              calcTestAccuracy batchSize net' $
+                S.map (Bi.first toMNISTInput) tests
             puts $ printf "Test Accuracy: %f%%" $ acc * 100
           mask_ $ do
             liftIO $ BS.writeFile modelFile $ Persist.encode net'
@@ -323,11 +396,11 @@ puts = liftIO . putStrLn
 readMNISTDataDir ::
   MonadResource m =>
   FilePath ->
-  m (Int, Stream (Of (MNISTInput PixelSize, Digit)) m ())
+  m (Int, Stream (Of (UMat PixelSize PixelSize Word8, Digit)) m ())
 readMNISTDataDir dir = do
-  (LabelFileHeader {..}, labels) <- parseLabelFileS $ Q.readFile (dir </> "labels.mnist")
+  (LabelFileHeader {..}, labels) <- parseLabelFileS $ Q.readFile (dir </> labelsFile)
   (ImageFileHeader {..}, imgs) <-
-    parseImageFileS $ Q.readFile (dir </> "images.mnist")
+    parseImageFileS $ Q.readFile (dir </> imagesFile)
   when (labelCount /= imageCount) $
     error $
       printf
@@ -345,8 +418,14 @@ readMNISTDataDir dir = do
       dir
       rowCount
       columnCount
-  let imgs' = S.map (toMNISTInput . unsafeToMat) imgs
+  let imgs' = S.map unsafeToMat imgs
   pure (fromIntegral labelCount, S.zip imgs' labels)
+
+imagesFile :: FilePath
+imagesFile = "images.mnist"
+
+labelsFile :: FilePath
+labelsFile = "labels.mnist"
 
 batchedNetSeed :: Network LayerSpec ImageSize BatchedNet 10 Double
 batchedNetSeed =

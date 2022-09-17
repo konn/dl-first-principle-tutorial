@@ -9,40 +9,55 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 
-module Data.Format.MNIST
-  ( Digit (D0, D1, D2, D3, D4, D5, D6, D7, D8, D9),
-    digit,
-    getDigit,
-    LabelFileHeader (..),
-    ImageFileHeader (..),
-    MNISTException (..),
-    Pixel,
-    Image,
-    fromGrayscaleImage,
+module Data.Format.MNIST (
+  -- * Types and constructors
+  Digit (D0, D1, D2, D3, D4, D5, D6, D7, D8, D9),
+  digit,
+  getDigit,
+  LabelFileHeader (..),
+  ImageFileHeader (..),
+  MNISTException (..),
+  Pixel,
+  Image,
+  fromGrayscaleImage,
 
-    -- * Parsers
+  -- * Parsers and Formatters
 
-    -- *** Label File
-    labelFileMagicNumber,
-    labelFileHeaderP,
-    digitP,
-    labelFileP,
-    parseLabelFileS,
+  -- ** Label File
 
-    -- *** Image File
-    imageFileMagicNumber,
-    imageFileHeaderP,
-    pixelP,
-    imageP,
-    imageFileP,
-    parseImageFileS,
-  )
-where
+  -- *** Parsers
+  labelFileMagicNumber,
+  labelFileHeaderP,
+  digitP,
+  labelFileP,
+  parseLabelFileS,
+
+  -- *** Formatters
+  formatLabelFileHeader,
+  formatDigit,
+  streamLabelFile,
+
+  -- ** Image File
+
+  -- *** Parsers
+  imageFileMagicNumber,
+  imageFileHeaderP,
+  pixelP,
+  imageP,
+  imageFileP,
+  parseImageFileS,
+
+  -- *** Formatters
+  formatImageFileHeader,
+  formatImage,
+  streamImageFile,
+) where
 
 import Control.DeepSeq (NFData)
 import Control.Exception (Exception, throwIO)
@@ -50,10 +65,12 @@ import Control.Monad (guard, void, (>=>))
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.Trans.Class (lift)
 import qualified Data.Attoparsec.Binary as BA
-import Data.Attoparsec.ByteString (Parser)
+import Data.Attoparsec.ByteString (Parser, (<?>))
 import qualified Data.Attoparsec.ByteString as A
 import qualified Data.Attoparsec.ByteString.Streaming as AQ
+import qualified Data.ByteString.Builder as B
 import Data.Coerce (coerce)
+import Data.Function ((&))
 import Data.Functor.Of (Of (..))
 import Data.Massiv.Array (Sz (..))
 import qualified Data.Massiv.Array as M
@@ -134,14 +151,24 @@ newtype LabelFileHeader = LabelFileHeader {labelCount :: Word32}
 
 labelFileHeaderP :: Parser LabelFileHeader
 labelFileHeaderP =
-  BA.word32be labelFileMagicNumber
-    *> (LabelFileHeader <$> BA.anyWord32be)
+  (BA.word32be labelFileMagicNumber <?> "label magic number")
+    *> (LabelFileHeader <$> BA.anyWord32be <?> "label count")
+    <?> "label file header"
+
+formatLabelFileHeader :: LabelFileHeader -> B.Builder
+{-# INLINE formatLabelFileHeader #-}
+formatLabelFileHeader hdr =
+  B.word32BE labelFileMagicNumber <> B.word32BE (labelCount hdr)
 
 digitP :: Parser Digit
 digitP = do
-  w <- A.anyWord8
+  w <- A.anyWord8 <?> "digit"
   guard $ w <= 9
   pure $ Digit w
+
+formatDigit :: Digit -> B.Builder
+{-# INLINE formatDigit #-}
+formatDigit = coerce B.word8
 
 labelFileP :: Parser (U.Vector Digit)
 labelFileP = do
@@ -168,6 +195,15 @@ parseLabelFileS =
       pure
         (hdr, void $ parseExactN (fromIntegral labelCount) digitP rest)
 
+streamLabelFile :: forall m r. (MonadIO m) => LabelFileHeader -> S.Stream (Of Digit) m r -> Q.ByteStream m r
+streamLabelFile hdr s = do
+  Q.toStreamingByteString $ formatLabelFileHeader hdr
+  s
+    & S.splitAt (fromIntegral $ labelCount hdr)
+    & S.subst (Q.toStreamingByteString @m . formatDigit)
+    & Q.concat
+    & S.drained
+
 imageFileMagicNumber :: Word32
 imageFileMagicNumber = 2051
 
@@ -176,17 +212,28 @@ data ImageFileHeader = ImageFileHeader {imageCount, rowCount, columnCount :: !Wo
   deriving anyclass (NFData)
 
 imageFileHeaderP :: Parser ImageFileHeader
-imageFileHeaderP = do
+imageFileHeaderP =
   ImageFileHeader
-    <$ BA.word32be imageFileMagicNumber
-    <*> BA.anyWord32be
-    <*> BA.anyWord32be
-    <*> BA.anyWord32be
+    <$ (BA.word32be imageFileMagicNumber <?> "image file magic number")
+    <*> (BA.anyWord32be <?> "number of images")
+    <*> (BA.anyWord32be <?> "number of rows")
+    <*> (BA.anyWord32be <?> "number of columns")
+    <?> "image file header"
+
+formatImageFileHeader :: ImageFileHeader -> B.Builder
+formatImageFileHeader hdr =
+  B.word32BE imageFileMagicNumber
+    <> B.word32BE (imageCount hdr)
+    <> B.word32BE (rowCount hdr)
+    <> B.word32BE (columnCount hdr)
 
 type Pixel = Word8
 
 pixelP :: Parser Pixel
-pixelP = A.anyWord8
+pixelP = A.anyWord8 <?> "pixel"
+
+formatPixel :: Pixel -> B.Builder
+formatPixel = B.word8
 
 type Image = M.Array M.U M.Ix2 Pixel
 
@@ -200,11 +247,17 @@ fromGrayscaleImage = M.computeP . M.map (\(MIO.PixelY' c) -> 255 - c)
 
 imageP :: ImageFileHeader -> Parser Image
 imageP ImageFileHeader {..} =
-  M.makeArrayA (Sz2 (fromIntegral rowCount) (fromIntegral columnCount)) $
-    const pixelP
+  M.makeArrayA
+    (Sz2 (fromIntegral rowCount) (fromIntegral columnCount))
+    (const pixelP)
+    <?> "image"
+
+formatImage :: Image -> B.Builder
+{-# INLINE formatImage #-}
+formatImage = M.foldMono formatPixel
 
 imageFileP :: Parser (MS.Vector MS.DS Image)
-imageFileP = do
+imageFileP = flip (<?>) "image file" $ do
   h@ImageFileHeader {..} <- imageFileHeaderP
   MS.sreplicateM (fromIntegral imageCount) $ imageP h
 
@@ -216,6 +269,19 @@ parseImageFileS ::
 parseImageFileS =
   parseE imageFileHeaderP >=> \(h@ImageFileHeader {..}, rest) ->
     pure (h, void $ parseExactN (fromIntegral imageCount) (imageP h) rest)
+
+streamImageFile ::
+  MonadIO m =>
+  ImageFileHeader ->
+  S.Stream (Of Image) m r ->
+  Q.ByteStream m r
+streamImageFile hdr@ImageFileHeader {..} s = do
+  Q.toStreamingByteString (formatImageFileHeader hdr)
+  s
+    & S.splitAt (fromIntegral imageCount)
+    & S.subst (Q.toStreamingByteString . formatImage)
+    & S.drained
+    & Q.concat
 
 parseExactN :: MonadIO m => Int -> Parser a -> Q.ByteStream m x -> S.Stream (Of a) m (Q.ByteStream m x)
 {-# INLINE parseExactN #-}

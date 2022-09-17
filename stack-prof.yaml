@@ -1,0 +1,23 @@
+resolver: lts-19.21
+work-dir: ".stack-prof"
+
+packages:
+- .
+apply-ghc-options: everything
+rebuild-ghc-options: true
+
+build:
+  library-profiling: true
+  executable-profiling: true
+  haddock: false
+  haddock-deps: false
+  haddock-internal: false
+
+ghc-options:
+  $everything: "-O0 -fno-prof-auto"
+  $locals: "-O0 -fprof-auto"
+
+extra-deps:
+  # Workaround for GHC 9.0
+- github: konn/backprop
+  commit: d342e3db0c9d49caf01284d0ff128edf31974cc2

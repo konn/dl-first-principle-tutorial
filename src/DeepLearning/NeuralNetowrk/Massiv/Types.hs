@@ -541,7 +541,7 @@ data NeuralNetwork i ls o a = NeuralNetwork
   , weights :: !(Network Weights i ls o a)
   }
   deriving (Generic, Eq)
-  deriving anyclass (Persist)
+  deriving anyclass (Persist, NFData)
 
 data SomeNeuralNetwork i o a where
   MkSomeNeuralNetwork :: NeuralNetwork i ls o a -> SomeNeuralNetwork i o a
@@ -1046,8 +1046,7 @@ networkStat =
         }
 
 instance
-  ( KnownNat o
-  , NFData a
+  ( NFData a
   , U.Unbox a
   , forall l x y. NFData (h l x y a)
   ) =>

@@ -69,6 +69,7 @@ library
     , generic-lens
     , ghc-typelits-knownnat
     , ghc-typelits-presburger
+    , heaps
     , hybrid-vectors
     , lens
     , linear
@@ -130,6 +131,7 @@ executable circles
     , generic-lens
     , ghc-typelits-knownnat
     , ghc-typelits-presburger
+    , heaps
     , hybrid-vectors
     , lens
     , linear
@@ -193,6 +195,7 @@ executable iris
     , generic-lens
     , ghc-typelits-knownnat
     , ghc-typelits-presburger
+    , heaps
     , hybrid-vectors
     , lens
     , linear
@@ -255,6 +258,7 @@ executable mnist
     , generic-lens
     , ghc-typelits-knownnat
     , ghc-typelits-presburger
+    , heaps
     , hybrid-vectors
     , lens
     , linear
@@ -318,6 +322,7 @@ executable spirals-batchnorm
     , generic-lens
     , ghc-typelits-knownnat
     , ghc-typelits-presburger
+    , heaps
     , hybrid-vectors
     , lens
     , linear
