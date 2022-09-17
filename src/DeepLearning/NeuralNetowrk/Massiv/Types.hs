@@ -64,6 +64,7 @@ module DeepLearning.NeuralNetowrk.Massiv.Types (
   withKnownNeuralNetwork,
   mapNetwork,
   htraverseNetwork,
+  hmapNetworkM',
   zipNetworkWith,
   zipNetworkWith3,
   KnownNetwork (..),
@@ -203,7 +204,7 @@ data LayerSpec l n m a where
   AffP :: a -> LayerSpec 'Aff n m a
   LinP :: a -> LayerSpec 'Lin n m a
   ActP :: KnownActivation act => LayerSpec ( 'Act act) n n a
-  BNP :: LayerSpec 'BN n n a
+  BNP :: a -> LayerSpec 'BN n n a
 
 deriving instance Show a => Show (LayerSpec l n m a)
 
@@ -896,6 +897,26 @@ htraverseNetwork _ Output = pure Output
 htraverseNetwork f (hfka :- net') =
   (:-) <$> f hfka <*> htraverseNetwork f net'
 
+hmapNetworkM' ::
+  forall i o a h f k b ls.
+  (KnownNat i, Monad f) =>
+  ( forall l x y.
+    (KnownNat x, KnownNat y) =>
+    h l x y a ->
+    f (k l x y b)
+  ) ->
+  Network h i ls o a ->
+  f (Network k i ls o b)
+{-# INLINE hmapNetworkM' #-}
+hmapNetworkM' f = go
+  where
+    go :: (KnownNat i') => Network h i' ls' o a -> f (Network k i' ls' o b)
+    go Output = pure Output
+    go (hfka :- net') = do
+      !b <- f hfka
+      !bs <- go net'
+      pure $! b :- bs
+
 foldMapNetwork ::
   forall h i ls o a w.
   (Monoid w) =>
@@ -906,12 +927,12 @@ foldMapNetwork ::
   ) ->
   Network h i ls o a ->
   w
-foldMapNetwork f = go
+foldMapNetwork f = go mempty
   where
-    go :: Network h x hs o a -> w
+    go :: w -> Network h x hs o a -> w
     {-# INLINE go #-}
-    go Output = mempty
-    go (h :- hs) = f h <> go hs
+    go !w Output = w
+    go !w (h :- hs) = go (w <> f h) hs
 
 foldZipNetwork ::
   forall h g i ls o a b w.
@@ -925,16 +946,17 @@ foldZipNetwork ::
   Network h i ls o a ->
   Network g i ls o b ->
   w
-foldZipNetwork f = go
+foldZipNetwork f = go mempty
   where
     go ::
       (KnownNat x) =>
+      w ->
       Network h x hs o a ->
       Network g x hs o b ->
       w
     {-# INLINE go #-}
-    go Output Output = mempty
-    go (h :- hs) (g :- gs) = f h g <> go hs gs
+    go !w Output Output = w
+    go !w (h :- hs) (g :- gs) = go (w <> f h g) hs gs
 
 zipNetworkWith ::
   forall h k t i ls o a b c.
@@ -957,7 +979,10 @@ zipNetworkWith f = go
       Network k n' ls' m' b ->
       Network t n' ls' m' c
     go Output Output = Output
-    go (hxy :- hs) (kxy :- ks) = f hxy kxy :- go hs ks
+    go (hxy :- hs) (kxy :- ks) =
+      let !c = f hxy kxy
+          !rest = go hs ks
+       in c :- rest
 
 zipNetworkWith3 ::
   forall h k t u i ls o a b c d.
@@ -983,7 +1008,8 @@ zipNetworkWith3 f = go
       Network t n' ls' m' c ->
       Network u n' ls' m' d
     go Output Output Output = Output
-    go (hxy :- hs) (kxy :- ks) (txy :- ts) = f hxy kxy txy :- go hs ks ts
+    go (hxy :- hs) (kxy :- ks) (txy :- ts) =
+      let !d = f hxy kxy txy in d :- go hs ks ts
 
 data AdamParams a = AdamParams {beta1, beta2, epsilon :: !a}
   deriving (Show, Eq, Ord, Generic)

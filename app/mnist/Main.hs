@@ -18,7 +18,6 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE NoStarIsType #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
 
@@ -36,7 +35,7 @@ import Control.Monad.Trans.Resource (MonadResource, ResourceT, runResourceT)
 import Control.Subcategory.Linear (unsafeToMat)
 import qualified Data.ByteString as BS
 import qualified Data.DList as DL
-import Data.Foldable (foldlM)
+import Data.Foldable (fold, foldlM)
 import Data.Functor (void)
 import Data.Functor.Of (Of (..))
 import Data.Massiv.Array (PrimMonad, Sz (..))
@@ -190,15 +189,15 @@ doTrain seed TrainOpts {..} = do
         ( \(net :!: es) ecount -> do
             let !es' = es + ecount
             puts $ printf "** Epoch #%d..%d Started." es es'
-            net' <-
+            !net' <-
               appEndoM
-                ( mconcat $
+                ( fold $
                     replicate
                       ecount
-                      ( EndoM $ \nets -> do
+                      ( EndoM $ \ !nets -> do
                           g <- thawGen seed
-                          (_, trainDataSet) <- readMNISTDataDir trainDataDir
-                          let trainBatches =
+                          (_, !trainDataSet) <- readMNISTDataDir trainDataDir
+                          let !trainBatches =
                                 trainDataSet
                                   & shuffleBuffered g shuffWindow
                                   & S.map (\(a, d) -> ((a, toDigitVector d), d))
@@ -285,10 +284,10 @@ readMNISTDataDir dir = do
 batchedNetSeed :: Network LayerSpec ImageSize BatchedNet 10 Double
 batchedNetSeed =
   linear @300 @ImageSize (sqrt $ 2.0 / fromIntegral imageSize)
-    :- batchnorm
+    :- batchnorm (sqrt $ 2.0 / 300)
     :- reLU_
     :- linear @50 (sqrt $ 2.0 / 300)
-    :- batchnorm
+    :- batchnorm (sqrt $ 2.0 / 300)
     :- reLU_
     :- affine @10 (sqrt $ 1.0 / 50)
     :- softmax_

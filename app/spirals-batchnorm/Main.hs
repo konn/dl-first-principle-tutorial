@@ -163,10 +163,10 @@ dualSpiralTest Opts {..} = do
 
   let seeds =
         linear @40 (2 / sqrt 2)
-          :- batchnorm
+          :- batchnorm (sqrt $ 2 / 40)
           :- reLU_
           :- linear @25 (2 / 40)
-          :- batchnorm
+          :- batchnorm (sqrt $ 2 / 25)
           :- reLU_
           :- affine @10 (2 / sqrt 25)
           :- reLU_
@@ -184,11 +184,11 @@ dualSpiralTest Opts {..} = do
         | r == 0 = replicate 10 qs
         | otherwise = replicate 10 qs ++ [r]
   putStrLn $
-    printf "Initial: training accuracy: %f%%"
-      $! predictionAccuracy net0 trainSet * 100
+    printf "Initial: training accuracy: %f%%" $!
+      predictionAccuracy net0 trainSet * 100
   putStrLn $
-    printf "Initial: Validation accuracy: %f%%"
-      $! predictionAccuracy net0 testSet * 100
+    printf "Initial: Validation accuracy: %f%%" $!
+      predictionAccuracy net0 testSet * 100
 
   savePredictionComparisonImage
     (layDir </> "initial.png")
@@ -203,11 +203,11 @@ dualSpiralTest Opts {..} = do
           putStrLn $ printf "*** Epoch %d" total'
           !netGD <- evaluate $ trainByGradientDescent gamma n trainSet netGD0
           putStrLn $
-            printf "[Gradient Descent] Training accuracy: %f%%"
-              $! predictionAccuracy netGD trainSet * 100
+            printf "[Gradient Descent] Training accuracy: %f%%" $!
+              predictionAccuracy netGD trainSet * 100
           putStrLn $
-            printf "[Gradient Descent] Validation accuracy: %f%%"
-              $! predictionAccuracy netGD testSet * 100
+            printf "[Gradient Descent] Validation accuracy: %f%%" $!
+              predictionAccuracy netGD testSet * 100
           savePredictionComparisonImage
             (layDir </> printf "predict-gd-%d.png" total')
             netGD
@@ -216,11 +216,11 @@ dualSpiralTest Opts {..} = do
           putStrLn "---"
           !netAdam <- evaluate $ trainByAdam gamma adams n trainSet netAdam0
           putStrLn $
-            printf "[Adam] Training accuracy: %f%%"
-              $! predictionAccuracy netAdam trainSet * 100
+            printf "[Adam] Training accuracy: %f%%" $!
+              predictionAccuracy netAdam trainSet * 100
           putStrLn $
-            printf "[Adam] Validation accuracy: %f%%"
-              $! predictionAccuracy netAdam testSet * 100
+            printf "[Adam] Validation accuracy: %f%%" $!
+              predictionAccuracy netAdam testSet * 100
           savePredictionComparisonImage
             (layDir </> printf "predict-adam-%d.png" total')
             netAdam

@@ -105,7 +105,7 @@ module DeepLearning.NeuralNetowrk.Massiv (
 import Control.Applicative (liftA2)
 import Control.Lens (Lens', lens, _1, _2)
 import Control.Subcategory.Linear
-import Data.Bifunctor (bimap)
+import qualified Data.Bifunctor as Bi
 import Data.Generics.Labels ()
 import Data.List (iterate')
 import qualified Data.Massiv.Array as M
@@ -146,7 +146,7 @@ softmax_ = ActP
 passthru_ :: forall i a. LayerSpec (Act 'Id) i i a
 passthru_ = ActP
 
-batchnorm :: forall i a. LayerSpec 'BN i i a
+batchnorm :: forall i a. a -> LayerSpec 'BN i i a
 batchnorm = BNP
 
 affineMatL :: Lens' (Weights Aff i o a) (UMat i o a)
@@ -254,7 +254,7 @@ applyActivatorBV SId = id
 
 data TopLayerView h i l k xs o a = TopLayerView
   { topLayer :: !(h l i k a)
-  , continue :: Network h k xs o a
+  , continue :: !(Network h k xs o a)
   }
   deriving (Generic)
 
@@ -410,11 +410,11 @@ gradNN ::
   Network Weights i ls o a ->
   (Network Weights i ls o a, Network RecParams i ls o a)
 gradNN loss (inps, oups) recPs =
-  bimap ($ (1, zero recPs)) snd
+  Bi.second snd
     . swap
-    . backpropWith
+    . backprop
       ( \net ->
-          let ysRecs' = runNN Train recPs net (auto inps)
+          let !ysRecs' = runNN Train recPs net (auto inps)
            in T2 (loss (ysRecs' ^^. _1) (auto oups) /. fromIntegral (dimVal @m)) (ysRecs' ^^. _2)
       )
 
@@ -583,8 +583,8 @@ trainAdam_ gamma alpha AdamParams {..} n loss dataSet =
       let (dW, ps') = gradNN loss dataSet ps net
           sN = beta2 .* s + (1 - beta2) .* (dW * dW)
           vN = beta1 .* v + (1 - beta1) .* dW
-          net' = net - (gamma .* vN) / sqrt (sN +. epsilon)
-          ps'' = alpha .* ps' + (1 - alpha) .* ps
+          !net' = net - (gamma .* vN) / sqrt (sN +. epsilon)
+          !ps'' = alpha .* ps' + (1 - alpha) .* ps
        in NeuralNetwork ps'' net' :!: (sN :!: vN)
 
 randomNetwork ::
@@ -597,12 +597,12 @@ randomNetwork ::
   m (NeuralNetwork i ls o Double)
 randomNetwork g =
   liftA2 NeuralNetwork
-    <$> htraverseNetwork \case
+    <$> hmapNetworkM' \case
       (AffP _ :: LayerSpec _ i _ _) -> pure AffRP
       (LinP _ :: LayerSpec _ i _ _) -> pure LinRP
       (ActP :: LayerSpec _ _ _ _) -> pure $ ActRP sActivation
-      (BNP :: LayerSpec _ i _ _) -> pure $ BatRP 0 1
-    <*> htraverseNetwork \case
+      (BNP _ :: LayerSpec _ i _ _) -> pure $ BatRP 0 1
+    <*> hmapNetworkM' \case
       (AffP s :: LayerSpec _ i _ _) -> do
         ws <- replicateMatA $ normal 0.0 s g
         pure $ AffW ws 0.0
@@ -610,7 +610,7 @@ randomNetwork g =
         ws <- replicateMatA $ normal 0.0 s g
         pure $ LinW ws
       (ActP :: LayerSpec _ _ _ _) -> pure ActW
-      (BNP :: LayerSpec _ i _ _) -> pure $ BatW 1 0
+      (BNP s :: LayerSpec _ i _ _) -> (`BatW` 0) <$> replicateVecA (normal 0.0 s g)
 
 simpleSomeNetwork ::
   forall i o a.
@@ -625,7 +625,7 @@ simpleSomeNetwork = go
       KnownNat k =>
       [(Natural, Activation)] ->
       SomeNetwork LayerSpec k o a
-    go [] = MkSomeNetwork $ AffP s :- ActP @'Sigmoid :- Output
+    go [] = MkSomeNetwork $ AffP s :- ActP @( 'Sigmoid) :- Output
       where
         !s = recip $ sqrt $ fromIntegral $ dimVal @k
     go ((n, act) : rest) = case (someNatVal n, someActivation act) of
