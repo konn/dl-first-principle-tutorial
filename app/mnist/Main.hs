@@ -209,7 +209,7 @@ doTrain seed TrainOpts {..} = do
                 net
 
             (_, tests) <- readMNISTDataDir testDataDir
-            !acc <- calcTestAccuracy batchSize batchedNN tests
+            !acc <- calcTestAccuracy batchSize net' tests
             puts $ printf "Test Accuracy: %f%%" $ acc * 100
             mask_ $ do
               liftIO $ BS.writeFile modelFile $ Persist.encode net'
