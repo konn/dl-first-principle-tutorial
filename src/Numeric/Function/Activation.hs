@@ -4,7 +4,7 @@ module Numeric.Function.Activation (sigmoid, relu, softmax) where
 
 import Control.Arrow
 import Control.Subcategory
-import Control.Subcategory.Linear (Mat, duplicateAsCols', sumRows')
+import Control.Subcategory.Linear (Mat, duplicateAsRows', sumCols')
 import Data.Massiv.Array (Ix1, Ix2, Load, Manifest, NumericFloat)
 import Data.Type.Natural
 import Numeric.Backprop (BVar, Backprop, Reifies, W, liftOp1, op1)
@@ -34,4 +34,4 @@ softmax ::
   BVar s (Mat r m k a)
 softmax us =
   let exps = exp us
-   in exps / duplicateAsCols' (sumRows' exps)
+   in exps / duplicateAsRows' (sumCols' exps)

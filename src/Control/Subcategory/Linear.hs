@@ -97,6 +97,7 @@ module Control.Subcategory.Linear (
   dimVal,
   trans,
   duplicateAsCols',
+  duplicateAsRows',
   (!*:),
   (!*!:),
   sumRows',
@@ -278,6 +279,28 @@ duplicateAsCols' = liftOp1 $
       op1 $ \x ->
         ( computeM $ duplicateAsCols @m @r @n @a x
         , computeV . columnAt @0
+        )
+
+duplicateAsRows' ::
+  forall m r n a s.
+  ( KnownNat m
+  , M.Manifest r a
+  , Reifies s W
+  , KnownNat n
+  , M.Load r M.Ix1 a
+  , M.NumericFloat r a
+  , M.Load r M.Ix2 a
+  ) =>
+  BVar s (Vec r n a) ->
+  BVar s (Mat r n m a)
+{-# INLINE duplicateAsRows' #-}
+duplicateAsRows' = liftOp1 $
+  case sNat @1 %<=? sNat @m of
+    SFalse -> 0.0
+    STrue ->
+      op1 $ \x ->
+        ( computeM $ duplicateAsRows @m @r @n @a x
+        , computeV . rowAt @0
         )
 
 sumRows' ::
