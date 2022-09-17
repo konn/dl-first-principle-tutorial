@@ -226,7 +226,7 @@ readNetworkFile ::
   forall ls m.
   (MonadIO m, KnownNetwork 784 ls 10) =>
   FilePath ->
-  m (NeuralNetwork 784 ls 10 Double)
+  m (NeuralNetwork 784 ls 10 Float)
 readNetworkFile inFile =
   either error pure . Persist.decode @(MNISTNN ls)
     =<< liftIO (BS.readFile inFile)
@@ -241,7 +241,7 @@ type PixelSize = 28
 
 type ImageSize = PixelSize * PixelSize
 
-type MNISTNN ls = NeuralNetwork ImageSize ls 10 Double
+type MNISTNN ls = NeuralNetwork ImageSize ls 10 Float
 
 type BatchedNet =
   '[ L 'Lin 300
@@ -263,7 +263,7 @@ type PlainNet =
    , L (Act 'Softmax) 10
    ]
 
-adams :: AdamParams Double
+adams :: AdamParams Float
 adams = AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-16}
 
 doTrain ::
@@ -377,8 +377,8 @@ calcTestAccuracy ::
   PrimMonad m =>
   -- | Batchsize
   Int ->
-  NeuralNetwork 784 BatchedNet 10 Double ->
-  Stream (Of (MNISTInput PixelSize, Digit)) (ResourceT m) r ->
+  NeuralNetwork 784 BatchedNet 10 Float ->
+  Stream (Of (MNISTInput PixelSize Float, Digit)) (ResourceT m) r ->
   ResourceT m Double
 calcTestAccuracy n net =
   chunksOfVector n
@@ -427,7 +427,7 @@ imagesFile = "images.mnist"
 labelsFile :: FilePath
 labelsFile = "labels.mnist"
 
-batchedNetSeed :: Network LayerSpec ImageSize BatchedNet 10 Double
+batchedNetSeed :: Network LayerSpec ImageSize BatchedNet 10 Float
 batchedNetSeed =
   linear @300 @ImageSize (sqrt $ 2.0 / fromIntegral imageSize)
     :- batchnorm (sqrt $ 2.0 / 300)
@@ -439,7 +439,7 @@ batchedNetSeed =
     :- softmax_
     :- Output
 
-plainNetSeed :: Network LayerSpec ImageSize PlainNet 10 Double
+plainNetSeed :: Network LayerSpec ImageSize PlainNet 10 Float
 plainNetSeed =
   affine @300 (sqrt $ 2.0 / fromIntegral imageSize)
     :- reLU_
@@ -456,8 +456,8 @@ data TrainOpts = TrainOpts
   { epochs :: !Int
   , batchSize :: !Int
   , outputInterval :: !(Maybe Int)
-  , gamma :: !Double
-  , dumpingFactor :: !Double
+  , gamma :: !Float
+  , dumpingFactor :: !Float
   , modelDir :: !FilePath
   , trainDataDir :: !FilePath
   , testDataDir :: !FilePath

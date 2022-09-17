@@ -14,20 +14,19 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE NoStarIsType #-}
 
-module DeepLearning.MNIST
-  ( toMNISTInput,
-    toDigitVector,
-    inferDigit,
-    predict,
-    predicts,
-    accuracy,
-    MNISTParams (..),
-    DigitVector (..),
-    MNISTInput,
-    train,
-    module Data.Format.MNIST,
-  )
-where
+module DeepLearning.MNIST (
+  toMNISTInput,
+  toDigitVector,
+  inferDigit,
+  predict,
+  predicts,
+  accuracy,
+  MNISTParams (..),
+  DigitVector (..),
+  MNISTInput,
+  train,
+  module Data.Format.MNIST,
+) where
 
 import Control.Applicative (liftA2)
 import qualified Control.Foldl as L
@@ -51,6 +50,7 @@ import DeepLearning.NeuralNetowrk.Massiv
 import GHC.Generics (Generic, Generic1)
 import GHC.TypeNats (KnownNat, type (*))
 import Generic.Data (Generically1 (..))
+import Numeric.Backprop (Backprop)
 
 data DigitVector a = DigitVector
   { is0
@@ -157,9 +157,9 @@ instance Distributive DigitVector where
 
 deriving anyclass instance (VectorSpace a a) => VectorSpace a (DigitVector a)
 
-type MNISTInput n = UMat n n Double
+type MNISTInput n = UMat n n
 
-toMNISTInput :: UMat n n Word8 -> MNISTInput n
+toMNISTInput :: forall n a. (U.Unbox a, Fractional a) => UMat n n Word8 -> MNISTInput n a
 toMNISTInput = cmap ((/ 255) . realToFrac)
 
 digits :: DigitVector Digit
@@ -167,16 +167,30 @@ digits = tabulate id
 
 inferDigit :: Ord a => DigitVector a -> Digit
 {-# INLINE inferDigit #-}
+{-# SPECIALIZE INLINE inferDigit :: DigitVector Double -> Digit #-}
+{-# SPECIALIZE INLINE inferDigit :: DigitVector Float -> Digit #-}
 inferDigit =
   fst
     . maximumBy (comparing snd)
     . liftA2 (,) digits
 
-predict :: KnownNat n => NeuralNetwork (n * n) ls 10 Double -> MNISTInput n -> Digit
+predict :: (KnownNat n, U.Unbox a, RealFloat a, Backprop a) => NeuralNetwork (n * n) ls 10 a -> MNISTInput n a -> Digit
+{-# SPECIALIZE INLINE predict ::
+  (KnownNat n) => NeuralNetwork (n * n) ls 10 Float -> MNISTInput n Float -> Digit
+  #-}
+{-# SPECIALIZE INLINE predict ::
+  (KnownNat n) => NeuralNetwork (n * n) ls 10 Double -> MNISTInput n Double -> Digit
+  #-}
 {-# INLINE predict #-}
 predict = fmap inferDigit . evalF
 
-predicts :: KnownNat n => NeuralNetwork (n * n) ls 10 Double -> U.Vector (MNISTInput n) -> U.Vector Digit
+predicts :: (KnownNat n, U.Unbox a, RealFloat a, Backprop a) => NeuralNetwork (n * n) ls 10 a -> U.Vector (MNISTInput n a) -> U.Vector Digit
+{-# SPECIALIZE INLINE predicts ::
+  (KnownNat n) => NeuralNetwork (n * n) ls 10 Double -> U.Vector (MNISTInput n Double) -> U.Vector Digit
+  #-}
+{-# SPECIALIZE INLINE predicts ::
+  (KnownNat n) => NeuralNetwork (n * n) ls 10 Float -> U.Vector (MNISTInput n Float) -> U.Vector Digit
+  #-}
 {-# INLINE predicts #-}
 predicts = fmap (U.map inferDigit) . evalBatchF
 
@@ -185,25 +199,41 @@ accuracy =
   fmap (L.foldOver vectorTraverse L.mean)
     . U.zipWith (\l r -> if l == r then 1.0 else 0.0)
 
-data MNISTParams = MNISTParams
-  { timeStep :: !Double
-  , dumpingFactor :: !Double
-  , adamParams :: !(AdamParams Double)
+data MNISTParams a = MNISTParams
+  { timeStep :: !a
+  , dumpingFactor :: !a
+  , adamParams :: !(AdamParams a)
   }
-  deriving (Show, Eq, Ord, Generic)
+  deriving (Show, Eq, Ord, Generic, Functor, Foldable, Traversable)
 
-toDigitVector :: Digit -> DigitVector Double
+toDigitVector :: Fractional a => Digit -> DigitVector a
+{-# SPECIALIZE INLINE toDigitVector :: Digit -> DigitVector Double #-}
+{-# SPECIALIZE INLINE toDigitVector :: Digit -> DigitVector Float #-}
 toDigitVector basis = tabulate $ \ix ->
   if ix == basis then 1.0 else 0.0
 
 train ::
-  forall n ls.
+  forall n a ls.
+  (KnownNat n, U.Unbox a, RealFloat a, Backprop a, VectorSpace a a) =>
+  MNISTParams a ->
+  U.Vector (MNISTInput n a, DigitVector a) ->
+  NeuralNetwork (n * n) ls 10 a ->
+  NeuralNetwork (n * n) ls 10 a
+{-# INLINE train #-}
+{-# SPECIALIZE train ::
   KnownNat n =>
-  MNISTParams ->
-  U.Vector (MNISTInput n, DigitVector Double) ->
+  MNISTParams Double ->
+  U.Vector (MNISTInput n Double, DigitVector Double) ->
   NeuralNetwork (n * n) ls 10 Double ->
   NeuralNetwork (n * n) ls 10 Double
-{-# INLINE train #-}
+  #-}
+{-# SPECIALIZE train ::
+  KnownNat n =>
+  MNISTParams Float ->
+  U.Vector (MNISTInput n Float, DigitVector Float) ->
+  NeuralNetwork (n * n) ls 10 Float ->
+  NeuralNetwork (n * n) ls 10 Float
+  #-}
 train MNISTParams {..} =
   trainAdamF
     timeStep

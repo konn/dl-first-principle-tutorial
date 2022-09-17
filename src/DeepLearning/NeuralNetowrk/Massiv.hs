@@ -5,6 +5,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -504,7 +505,7 @@ trainGD_ gamma alpha n loss dataSet = last . take n . iterate' step
        in NeuralNetwork (alpha .* ps' + (1 - alpha) .* ps) (ws - gamma .* ws')
 
 data AdamParams a = AdamParams {beta1, beta2, epsilon :: !a}
-  deriving (Show, Eq, Ord, Generic)
+  deriving (Show, Eq, Ord, Generic, Functor, Foldable, Traversable)
 
 -- | The variant of 'trainAdam' with functorial inputs and outputs.
 trainAdamF ::
@@ -576,13 +577,28 @@ trainAdam_ ::
   (UMat m i a, UMat m o a) ->
   NeuralNetwork i hs o a ->
   NeuralNetwork i hs o a
+{-# SPECIALIZE trainAdam_ ::
+  ( KnownNetwork i hs o
+  , KnownNat m
+  ) =>
+  -- \| Learning Rate (dt)
+  Double ->
+  -- \| Dumping factor
+  Double ->
+  AdamParams Double ->
+  Int ->
+  LossFunction m o Double ->
+  (UMat m i Double, UMat m o Double) ->
+  NeuralNetwork i hs o Double ->
+  NeuralNetwork i hs o Double
+  #-}
 trainAdam_ gamma alpha AdamParams {..} n loss dataSet =
-  SP.fst . last . take n . iterate' step . (:!: (0 :!: 0))
+  SP.fst . last . take n . iterate' step . (:!: (reps 0.0 :!: reps 0.0))
   where
     step ((NeuralNetwork ps net) :!: (s :!: v)) =
       let (dW, ps') = gradNN loss dataSet ps net
-          sN = beta2 .* s + (1 - beta2) .* (dW * dW)
-          vN = beta1 .* v + (1 - beta1) .* dW
+          sN = beta2 .* s + (1.0 - beta2) .* (dW * dW)
+          vN = beta1 .* v + (1.0 - beta1) .* dW
           !net' = net - (gamma .* vN) / sqrt (sN +. epsilon)
           !ps'' = alpha .* ps' + (1 - alpha) .* ps
        in NeuralNetwork ps'' net' :!: (sN :!: vN)
@@ -591,26 +607,29 @@ randomNetwork ::
   ( RandomGenM g r m
   , KnownNat i
   , KnownNat o
+  , U.Unbox a
+  , Floating a
+  , Real a
   ) =>
   g ->
-  Network LayerSpec i ls o Double ->
-  m (NeuralNetwork i ls o Double)
+  Network LayerSpec i ls o a ->
+  m (NeuralNetwork i ls o a)
 randomNetwork g =
   liftA2 NeuralNetwork
     <$> hmapNetworkM' \case
       (AffP _ :: LayerSpec _ i _ _) -> pure AffRP
       (LinP _ :: LayerSpec _ i _ _) -> pure LinRP
       (ActP :: LayerSpec _ _ _ _) -> pure $ ActRP sActivation
-      (BNP _ :: LayerSpec _ i _ _) -> pure $ BatRP 0 1
+      (BNP _ :: LayerSpec _ i _ _) -> pure $ BatRP 0.0 1.0
     <*> hmapNetworkM' \case
       (AffP s :: LayerSpec _ i _ _) -> do
-        ws <- replicateMatA $ normal 0.0 s g
+        ws <- replicateMatA $ realToFrac <$> normal 0.0 (realToFrac s) g
         pure $ AffW ws 0.0
       (LinP s :: LayerSpec _ i _ _) -> do
-        ws <- replicateMatA $ normal 0.0 s g
+        ws <- replicateMatA $ realToFrac <$> normal 0.0 (realToFrac s) g
         pure $ LinW ws
       (ActP :: LayerSpec _ _ _ _) -> pure ActW
-      (BNP s :: LayerSpec _ i _ _) -> (`BatW` 0) <$> replicateVecA (normal 0.0 s g)
+      (BNP s :: LayerSpec _ i _ _) -> (`BatW` 0) <$> replicateVecA (realToFrac <$> normal 0.0 (realToFrac s) g)
 
 simpleSomeNetwork ::
   forall i o a.
