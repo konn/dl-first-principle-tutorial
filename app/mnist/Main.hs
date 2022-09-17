@@ -10,6 +10,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE RankNTypes #-}
@@ -223,7 +224,7 @@ doTrain seed TrainOpts {..} = do
     params =
       MNISTParams
         { timeStep = gamma
-        , dumpingFactor = 0.1
+        , dumpingFactor
         , adamParams = adams
         }
 
@@ -333,6 +334,7 @@ data TrainOpts = TrainOpts
   , batchSize :: !Int
   , outputInterval :: !(Maybe Int)
   , gamma :: !Double
+  , dumpingFactor :: !Double
   , modelDir :: !FilePath
   , trainDataDir :: !FilePath
   , testDataDir :: !FilePath
@@ -390,6 +392,13 @@ trainOptsP = do
         <> Opts.metavar "DIR"
         <> Opts.help "The directory containing test dataset; it must have images.mnist and labels.mnist"
         <> Opts.value ("data" </> "mnist" </> "test")
+  dumpingFactor <-
+    Opts.option Opts.auto $
+      Opts.long "alpha"
+        <> Opts.long "dumping-factor"
+        <> Opts.value 0.1
+        <> Opts.help "dumping factor for moving average used in batchnorm layer"
+        <> Opts.showDefault
   pure TrainOpts {..}
 
 data RecognitionOpts = RecognitionOpts {modelDir :: !FilePath, input :: !FilePath}
