@@ -42,6 +42,9 @@ module DeepLearning.NeuralNetowrk.Massiv (
   Weights (..),
   Activation (..),
   SomeActivation (..),
+  KnownActivation,
+  sActivation,
+  withKnownActivation,
   someActivation,
   type L,
   LayerKind (..),
@@ -85,7 +88,9 @@ module DeepLearning.NeuralNetowrk.Massiv (
   runLayer,
   gradNN,
   SLayerKind (..),
-  KnownLayerKind (..),
+  KnownLayerKind,
+  withKnownLayerKind,
+  sLayerKind,
   LayerLike,
   Aff,
   Lin,
@@ -98,7 +103,9 @@ module DeepLearning.NeuralNetowrk.Massiv (
   htraverseNetwork,
   zipNetworkWith,
   zipNetworkWith3,
-  KnownNetwork (..),
+  KnownNetwork,
+  networkShape,
+  withNetworkShape,
   NetworkShape (..),
   foldMapNetwork,
   foldZipNetwork,
@@ -275,13 +282,37 @@ topLayerL =
     )
     (\_ TopLayerView {..} -> topLayer :- continue)
 
+data ResidualView h i fs xs o a = ResidualView
+  { block :: !(Network h i fs i a)
+  , continue :: !(Network h i xs o a)
+  }
+  deriving (Generic)
+
+deriving anyclass instance
+  ( U.Unbox a
+  , Num a
+  , KnownNat i
+  , KnownNat o
+  , forall l' x y. (KnownNat x, KnownNat y) => Backprop (h l' x y a)
+  ) =>
+  Backprop (ResidualView h i fs xs o a)
+
+residualL ::
+  (KnownNetwork i fs i) =>
+  Lens' (Network h i (Skip fs ': xs) o a) (ResidualView h i fs xs o a)
+residualL =
+  lens
+    ( \(hlika ::- net) ->
+        ResidualView {block = hlika, continue = net}
+    )
+    (\_ ResidualView {..} -> block ::- continue)
+
 runNN ::
   forall m i hs o a s.
   ( KnownNat m
   , U.Unbox a
   , RealFloat a
   , Backprop a
-  , KnownNat i
   , KnownNat o
   , Reifies s W
   ) =>
@@ -295,13 +326,13 @@ runNN pass = go
   where
     go ::
       forall h ls.
-      (KnownNat h) =>
       Network RecParams h ls o a ->
       BVar s (Network Weights h ls o a) ->
       BVar s (UMat m h a) ->
       BVar s (UMat m o a, Network RecParams h ls o a)
     {-# INLINE go #-}
     go Output _ = flip T2 (auto Output)
+    -- Single layer
     go (ps :- restPs) lay = \x ->
       let !decons = lay ^^. topLayerL
           !top = decons ^^. #topLayer
@@ -310,6 +341,14 @@ runNN pass = go
           !v' = passed ^^. _1
           !rest' = passed ^^. _2
        in T2 v' (isoVar2 (:-) (\(a :- b) -> (a, b)) (vLays' ^^. _2) rest')
+    -- Residual connection
+    go (blk ::- restPs) lay = \x ->
+      let !resid = lay ^^. residualL
+          !rep = resid ^^. #block
+          !ran = runNN pass blk rep x
+          !passed = go restPs (resid ^^. #continue) (ran ^^. _1 + x)
+       in T2 (passed ^^. _1) $
+            isoVar2 (::-) (\(a ::- b) -> (a, b)) (ran ^^. _2) (passed ^^. _2)
 
 curryNN ::
   (Network RecParams i ls o a -> Network Weights i ls o a -> r) ->

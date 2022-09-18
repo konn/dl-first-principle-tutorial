@@ -26,7 +26,11 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# OPTIONS_GHC -Wno-partial-type-signatures #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# OPTIONS_GHC -funbox-strict-fields #-}
+
+{-# HLINT ignore "Use id" #-}
+{-# HLINT ignore "Eta reduce" #-}
 
 module DeepLearning.NeuralNetowrk.Massiv.Types (
   -- * Central data-types
@@ -37,12 +41,14 @@ module DeepLearning.NeuralNetowrk.Massiv.Types (
   Network (..),
   RecParams (..),
   Weights (..),
-  KnownActivation (..),
+  KnownActivation,
   Activation (..),
   SActivation (..),
+  sActivation,
   SomeActivation (..),
   someActivation,
   type L,
+  type Skip,
   LayerKind (..),
   NetworkStat (..),
   networkStat,
@@ -53,7 +59,9 @@ module DeepLearning.NeuralNetowrk.Massiv.Types (
 
   -- * General execution with backpropagation
   SLayerKind (..),
-  KnownLayerKind (..),
+  KnownLayerKind,
+  sLayerKind,
+  withKnownLayerKind,
   LayerLike,
   Aff,
   Lin,
@@ -67,10 +75,13 @@ module DeepLearning.NeuralNetowrk.Massiv.Types (
   hmapNetworkM',
   zipNetworkWith,
   zipNetworkWith3,
-  KnownNetwork (..),
+  KnownNetwork,
+  networkShape,
+  withNetworkShape,
   NetworkShape (..),
   foldMapNetwork,
   foldZipNetwork,
+  withKnownActivation,
 ) where
 
 import Control.Arrow ((>>>))
@@ -84,6 +95,7 @@ import Data.Kind (Type)
 import Data.Monoid (All (..), Ap (..), Sum (..))
 import Data.Persist (Get, Persist (..), Put)
 import Data.Proxy (Proxy (..))
+import Data.Reflection (Given (..), give)
 import Data.Type.Equality (testEquality, type (:~:) (..))
 import Data.Type.Natural
 import qualified Data.Vector.Unboxed as U
@@ -141,23 +153,33 @@ someActivation Id = MkSomeActivation SId
 
 deriving instance Show (SActivation a)
 
-class KnownActivation (a :: Activation) where
-  sActivation :: SActivation a
+type KnownActivation a = Given (SActivation a)
 
-instance KnownActivation 'ReLU where
-  sActivation = SReLU
+withKnownActivation :: SActivation a -> (KnownActivation a => r) -> r
+withKnownActivation = give
 
-instance KnownActivation 'Sigmoid where
-  sActivation = SSigmoid
+sActivation :: KnownActivation a => SActivation a
+sActivation = given
 
-instance KnownActivation 'Tanh where
-  sActivation = STanh
+instance Given (SActivation 'ReLU) where
+  given = SReLU
+  {-# INLINE given #-}
 
-instance KnownActivation 'Softmax where
-  sActivation = SSoftmax
+instance Given (SActivation 'Sigmoid) where
+  given = SSigmoid
+  {-# INLINE given #-}
 
-instance KnownActivation 'Id where
-  sActivation = SId
+instance Given (SActivation 'Tanh) where
+  given = STanh
+  {-# INLINE given #-}
+
+instance Given (SActivation 'Softmax) where
+  given = SSoftmax
+  {-# INLINE given #-}
+
+instance Given (SActivation 'Id) where
+  given = SId
+  {-# INLINE given #-}
 
 data SLayerKind (l :: LayerKind) n m where
   SAff :: SLayerKind 'Aff n m
@@ -165,29 +187,30 @@ data SLayerKind (l :: LayerKind) n m where
   SAct :: SActivation a -> SLayerKind ( 'Act a) n n
   SBN :: SLayerKind 'BN n n
 
-class
-  (KnownNat n, KnownNat m) =>
-  KnownLayerKind (l :: LayerKind) (n :: Nat) (m :: Nat)
-  where
-  sLayerKind :: SLayerKind l n m
+withKnownLayerKind :: (KnownNat n, KnownNat m) => SLayerKind l n m -> (KnownLayerKind l n m => r) -> r
+{-# INLINE withKnownLayerKind #-}
+withKnownLayerKind s f = give s f
 
-instance
-  (KnownNat n, KnownNat m) =>
-  KnownLayerKind 'Aff n m
-  where
-  sLayerKind = SAff
+type KnownLayerKind l n m = (KnownNat n, KnownNat m, Given (SLayerKind l n m))
 
-instance
-  (KnownNat n, KnownNat m) =>
-  KnownLayerKind 'Lin n m
-  where
-  sLayerKind = SLin
+sLayerKind :: forall l n m. KnownLayerKind l n m => SLayerKind l n m
+sLayerKind = given
 
-instance (n ~ m, KnownNat m, KnownActivation a) => KnownLayerKind ( 'Act a) n m where
-  sLayerKind = SAct sActivation
+instance Given (SLayerKind 'Aff n m) where
+  given = SAff
+  {-# INLINE given #-}
 
-instance (n ~ m, KnownNat m) => KnownLayerKind 'BN n m where
-  sLayerKind = SBN
+instance Given (SLayerKind 'Lin n m) where
+  given = SLin
+  {-# INLINE given #-}
+
+instance (n ~ m, KnownActivation a) => Given (SLayerKind ( 'Act a) n m) where
+  given = SAct sActivation
+  {-# INLINE given #-}
+
+instance (n ~ m) => Given (SLayerKind 'BN n m) where
+  given = SBN
+  {-# INLINE given #-}
 
 type Aff = 'Aff
 
@@ -492,6 +515,7 @@ instance
 instance (forall l x y. Semigroup (h l x y a)) => Semigroup (Network h i ls o a) where
   Output <> Output = Output
   (a :- as) <> (b :- bs) = (a <> b) :- (as <> bs)
+  (blk ::- as) <> (blk' ::- bs) = (blk <> blk') ::- (as <> bs)
   {-# INLINE (<>) #-}
 
 -- | FIXME: defining on the case of @l@ would reduce runtime branching.
@@ -514,10 +538,12 @@ instance (KnownNat i, KnownNat o, U.Unbox a, Num a) => Backprop (Weights l i o a
   add (BatW a b) (BatW a' b') = BatW (a + a') (b + b')
   {-# INLINE add #-}
 
-data Spec = L LayerKind Nat
+data Spec = L LayerKind Nat | Skip [Spec]
   deriving (Generic)
 
 type L = 'L
+
+type Skip = 'Skip
 
 type Network ::
   LayerLike ->
@@ -533,15 +559,24 @@ data Network h i fs o a where
     !(h l i k a) ->
     !(Network h k fs o a) ->
     Network h i (L l k ': fs) o a
+  (::-) ::
+    (KnownNat i, KnownNetwork i hs i) =>
+    !(Network h i hs i a) ->
+    !(Network h i fs o a) ->
+    Network h i (Skip hs ': fs) o a
 
-infixr 9 :-
+infixr 9 :-, ::-
 
 data NeuralNetwork i ls o a = NeuralNetwork
   { recParams :: !(Network RecParams i ls o a)
   , weights :: !(Network Weights i ls o a)
   }
   deriving (Generic, Eq)
-  deriving anyclass (Persist, NFData)
+  deriving anyclass (NFData)
+
+deriving instance
+  (KnownNetwork i ls o, Persist a, U.Unbox a) =>
+  Persist (NeuralNetwork i ls o a)
 
 data SomeNeuralNetwork i o a where
   MkSomeNeuralNetwork :: NeuralNetwork i ls o a -> SomeNeuralNetwork i o a
@@ -588,19 +623,18 @@ instance
     fmap MkSomeNeuralNetwork . NeuralNetwork <$> getNetworkBodyWith sh <*> getNetworkBodyWith sh
 
 instance
-  ( KnownNat i
-  , KnownNat o
-  , KnownNetwork i fs o
+  ( KnownNetwork i fs o
   , forall l x y. KnownLayerKind l x y => Num (h l x y a)
   ) =>
   Num (Network h i fs o a)
   where
   fromInteger = go $ networkShape @i @fs @o
     where
-      go :: NetworkShape l hs o -> Integer -> Network h l hs o a
+      go :: NetworkShape i' hs o' -> Integer -> Network h i' hs o' a
       {-# INLINE go #-}
       go IsOutput = pure Output
       go (IsCons _ rest) = (:-) <$> fromInteger <*> go rest
+      go (IsSkip sh rest) = withNetworkShape sh $ (::-) <$> go sh <*> go rest
   (+) = zipNetworkWith (+)
   {-# INLINE (+) #-}
   (-) = zipNetworkWith (-)
@@ -615,9 +649,7 @@ instance
   {-# INLINE signum #-}
 
 instance
-  ( KnownNat i
-  , KnownNat o
-  , Num a
+  ( Num a
   , KnownNetwork i fs o
   , Floating a
   , forall l x y. (KnownLayerKind l x y, KnownNat x, KnownNat y) => VectorSpace a (h l x y a)
@@ -626,10 +658,11 @@ instance
   where
   reps = go $ networkShape @i @fs @o
     where
-      go :: KnownNat l => NetworkShape l hs o -> a -> Network h l hs o a
+      go :: NetworkShape i' hs o' -> a -> Network h i' hs o' a
       {-# INLINE go #-}
       go IsOutput = pure Output
       go (IsCons _ rest) = (:-) <$> reps <*> go rest
+      go (IsSkip sh rest) = withNetworkShape sh $ (::-) <$> go sh <*> go rest
   {-# INLINE reps #-}
   (.*) c = mapNetwork (c .*)
   {-# INLINE (.*) #-}
@@ -651,28 +684,25 @@ instance
   {-# INLINE sumS #-}
 
 instance
-  ( KnownNat i
-  , KnownNat o
-  , KnownNetwork i fs o
+  ( KnownNetwork i fs o
   , forall l x y. (KnownLayerKind l x y => Fractional (h l x y a))
   ) =>
   Fractional (Network h i fs o a)
   where
   fromRational = go $ networkShape @i @fs @o
     where
-      go :: NetworkShape l hs o -> Rational -> Network h l hs o a
+      go :: NetworkShape i' hs o' -> Rational -> Network h i' hs o' a
       {-# INLINE go #-}
       go IsOutput = pure Output
       go (IsCons _ rest) = (:-) <$> fromRational <*> go rest
+      go (IsSkip sh rest) = withNetworkShape sh $ (::-) <$> go sh <*> go rest
   (/) = zipNetworkWith (/)
   {-# INLINE (/) #-}
   recip = mapNetwork recip
   {-# INLINE recip #-}
 
 instance
-  ( KnownNat i
-  , KnownNat o
-  , U.Unbox a
+  ( U.Unbox a
   , Floating a
   , KnownNetwork i fs o
   , forall l x y. (KnownLayerKind l x y => Floating (h l x y a))
@@ -681,10 +711,11 @@ instance
   where
   pi = go $ networkShape @i @fs @o
     where
-      go :: NetworkShape l hs o -> Network h l hs o a
+      go :: NetworkShape i' hs o' -> Network h i' hs o' a
       {-# INLINE go #-}
       go IsOutput = Output
       go (IsCons _ rest) = pi :- go rest
+      go (IsSkip sh rest) = withNetworkShape sh $ go sh ::- go rest
   {-# INLINE pi #-}
   exp = mapNetwork exp
   {-# INLINE exp #-}
@@ -738,10 +769,21 @@ instance
   showsPrec d (hlika :- net') =
     showParen (d > 9) $
       showsPrec 10 hlika . showString " :- " . showsPrec 9 net'
+  showsPrec d (residual ::- net') =
+    showParen (d > 10) $
+      showString "Residual "
+        . showsPrec 10 residual
+        . showString " ::- "
+        . showsPrec 9 net'
 
 data NetworkShape i xs o where
   IsOutput :: NetworkShape i '[] i
   IsCons :: (KnownLayerKind l i k, KnownNat k) => SLayerKind l i k -> NetworkShape k hs o -> NetworkShape i (L l k ': hs) o
+  IsSkip ::
+    KnownNat i =>
+    NetworkShape i fs i ->
+    NetworkShape i hs o ->
+    NetworkShape i (Skip fs ': hs) o
 
 data SomeNetworkShape where
   MkSomeNetworkShape ::
@@ -754,9 +796,15 @@ data SomeNetworkShape' i o where
     NetworkShape i xs o ->
     SomeNetworkShape' i o
 
+data Block
+  = Single !LayerKind !Word
+  | Residual ![Block]
+  deriving (Show, Eq, Ord, Generic)
+  deriving anyclass (Persist)
+
 data NetworkHeader = NetworkHeader
   { inputDim :: !Word
-  , layerSpecs :: ![(LayerKind, Word)]
+  , layerSpecs :: ![Block]
   , outputDim :: !Word
   }
   deriving (Show, Eq, Ord, Generic)
@@ -784,12 +832,12 @@ fromNetworkHeader NetworkHeader {..} =
 fromNetworkHeader' ::
   forall i o.
   (KnownNat i, KnownNat o) =>
-  [(LayerKind, Word)] ->
+  [Block] ->
   Maybe (SomeNetworkShape' i o)
 fromNetworkHeader' [] =
   testEquality (typeRep @i) (typeRep @o) <&> \case
     Refl -> MkSomeNetworkShape' IsOutput
-fromNetworkHeader' ((kind, dim) : rest) =
+fromNetworkHeader' (Single kind dim : rest) =
   case someNatVal $ fromIntegral dim of
     SomeNat (_ :: Proxy i') -> case kind of
       Aff -> do
@@ -807,11 +855,17 @@ fromNetworkHeader' ((kind, dim) : rest) =
         Refl <- testEquality (typeRep @i) (typeRep @i')
         MkSomeNetworkShape' net <- fromNetworkHeader' @i @o rest
         pure $ MkSomeNetworkShape' $ IsCons SBN net
+fromNetworkHeader' (Residual block : rest) = do
+  MkSomeNetworkShape' block' <- fromNetworkHeader' @i @i block
+  MkSomeNetworkShape' rest' <- fromNetworkHeader' @i @o rest
+  pure $ MkSomeNetworkShape' $ IsSkip block' rest'
 
-demoteLayerSpecs :: NetworkShape i xs o -> [(LayerKind, Word)]
+demoteLayerSpecs :: NetworkShape i xs o -> [Block]
 demoteLayerSpecs IsOutput = []
 demoteLayerSpecs (IsCons (slk :: SLayerKind l k m) ns') =
-  (demoteLayerKind slk, fromIntegral $ dimVal @k) : demoteLayerSpecs ns'
+  Single (demoteLayerKind slk) (fromIntegral $ dimVal @k) : demoteLayerSpecs ns'
+demoteLayerSpecs (IsSkip (blk :: NetworkShape i hs i) ns') =
+  Residual (demoteLayerSpecs blk) : demoteLayerSpecs ns'
 
 demoteLayerKind :: forall l i k. SLayerKind l i k -> LayerKind
 demoteLayerKind SAff = Aff
@@ -819,20 +873,29 @@ demoteLayerKind SLin = Lin
 demoteLayerKind (SAct sa) = Act $ activationVal sa
 demoteLayerKind SBN = BN
 
-class (KnownNat i, KnownNat o) => KnownNetwork i (xs :: [Spec]) o where
-  networkShape :: NetworkShape i xs o
+type KnownNetwork i xs o = (KnownNat i, KnownNat o, Given (NetworkShape i xs o))
 
-instance (i ~ o, KnownNat o) => KnownNetwork i '[] o where
-  networkShape = IsOutput
+networkShape :: forall i xs o. KnownNetwork i xs o => NetworkShape i xs o
+networkShape = given
+
+instance (i ~ o) => Given (NetworkShape i '[] o) where
+  given = IsOutput
+  {-# INLINE given #-}
 
 instance
-  ( KnownNat i
-  , KnownLayerKind l i k
+  ( KnownLayerKind l i k
   , KnownNetwork k xs o
   ) =>
-  KnownNetwork i (L l k : xs) o
+  Given (NetworkShape i (L l k : xs) o)
   where
-  networkShape = IsCons sLayerKind networkShape
+  given = IsCons sLayerKind networkShape
+  {-# INLINE given #-}
+
+instance
+  (KnownNetwork i hs i, KnownNetwork i xs o) =>
+  Given (NetworkShape i (Skip hs : xs) o)
+  where
+  given = IsSkip networkShape networkShape
 
 instance
   ( KnownNat i
@@ -845,10 +908,13 @@ instance
   where
   zero Output = Output
   zero (h :- hs) = zero h :- zero hs
+  zero (bk ::- hs) = zero bk ::- zero hs
   one Output = Output
   one (h :- hs) = one h :- one hs
+  one (bk ::- hs) = one bk ::- one hs
   add Output Output = Output
   add (h :- hs) (g :- gs) = add h g :- add hs gs
+  add (h ::- hs) (g ::- gs) = add h g ::- add hs gs
 
 withKnownNeuralNetwork ::
   KnownNat i =>
@@ -860,6 +926,9 @@ withKnownNeuralNetwork ::
   r
 withKnownNeuralNetwork f n = withKnownNetwork (recParams n) (f n)
 
+withNetworkShape :: (KnownNat i, KnownNat o) => NetworkShape i hs o -> (KnownNetwork i hs o => r) -> r
+withNetworkShape sh f = give sh f
+
 withKnownNetwork ::
   KnownNat i =>
   Network h i hs o a ->
@@ -869,6 +938,7 @@ withKnownNetwork ::
   r
 withKnownNetwork Output f = f
 withKnownNetwork (_ :- ps) f = withKnownNetwork ps f
+withKnownNetwork (blk ::- ps) f = withKnownNetwork blk $ withKnownNetwork ps f
 
 mapNetwork ::
   (KnownNat i, KnownNat o) =>
@@ -882,6 +952,7 @@ mapNetwork ::
 {-# INLINE mapNetwork #-}
 mapNetwork _ Output = Output
 mapNetwork f (hfka :- net') = f hfka :- mapNetwork f net'
+mapNetwork f (blk ::- net') = mapNetwork f blk ::- mapNetwork f net'
 
 htraverseNetwork ::
   (KnownNat i, KnownNat o, Applicative f) =>
@@ -896,10 +967,12 @@ htraverseNetwork ::
 htraverseNetwork _ Output = pure Output
 htraverseNetwork f (hfka :- net') =
   (:-) <$> f hfka <*> htraverseNetwork f net'
+htraverseNetwork f (blk ::- net') =
+  (::-) <$> htraverseNetwork f blk <*> htraverseNetwork f net'
 
 hmapNetworkM' ::
   forall i o a h f k b ls.
-  (KnownNat i, Monad f) =>
+  (Monad f) =>
   ( forall l x y.
     (KnownNat x, KnownNat y) =>
     h l x y a ->
@@ -910,12 +983,16 @@ hmapNetworkM' ::
 {-# INLINE hmapNetworkM' #-}
 hmapNetworkM' f = go
   where
-    go :: (KnownNat i') => Network h i' ls' o a -> f (Network k i' ls' o b)
+    go :: Network h i' ls' o' a -> f (Network k i' ls' o' b)
     go Output = pure Output
     go (hfka :- net') = do
       !b <- f hfka
       !bs <- go net'
       pure $! b :- bs
+    go (blk ::- net') = do
+      !blk' <- go blk
+      !bs <- go net'
+      pure $! blk' ::- bs
 
 foldMapNetwork ::
   forall h i ls o a w.
@@ -929,14 +1006,15 @@ foldMapNetwork ::
   w
 foldMapNetwork f = go mempty
   where
-    go :: w -> Network h x hs o a -> w
+    go :: w -> Network h x hs y a -> w
     {-# INLINE go #-}
     go !w Output = w
     go !w (h :- hs) = go (w <> f h) hs
+    go !w (h ::- hs) = go (go w h) hs
 
 foldZipNetwork ::
   forall h g i ls o a b w.
-  (KnownNat i, Monoid w) =>
+  (Monoid w) =>
   ( forall l x y.
     (KnownNat x, KnownNat y, KnownLayerKind l x y) =>
     h l x y a ->
@@ -949,18 +1027,17 @@ foldZipNetwork ::
 foldZipNetwork f = go mempty
   where
     go ::
-      (KnownNat x) =>
       w ->
-      Network h x hs o a ->
-      Network g x hs o b ->
+      Network h x hs y a ->
+      Network g x hs y b ->
       w
     {-# INLINE go #-}
     go !w Output Output = w
     go !w (h :- hs) (g :- gs) = go (w <> f h g) hs gs
+    go !w (h ::- hs) (g ::- gs) = go (go w h g) hs gs
 
 zipNetworkWith ::
   forall h k t i ls o a b c.
-  (KnownNat i, KnownNat o) =>
   ( forall l x y.
     (KnownNat x, KnownNat y, KnownLayerKind l x y) =>
     h l x y a ->
@@ -974,7 +1051,6 @@ zipNetworkWith ::
 zipNetworkWith f = go
   where
     go ::
-      (KnownNat n', KnownNat m') =>
       Network h n' ls' m' a ->
       Network k n' ls' m' b ->
       Network t n' ls' m' c
@@ -983,10 +1059,13 @@ zipNetworkWith f = go
       let !c = f hxy kxy
           !rest = go hs ks
        in c :- rest
+    go (hxy ::- hs) (kxy ::- ks) =
+      let !c = go hxy kxy
+          !rest = go hs ks
+       in c ::- rest
 
 zipNetworkWith3 ::
   forall h k t u i ls o a b c d.
-  (KnownNat i, KnownNat o) =>
   ( forall l x y.
     (KnownNat x, KnownNat y, KnownLayerKind l x y) =>
     h l x y a ->
@@ -1002,7 +1081,6 @@ zipNetworkWith3 ::
 zipNetworkWith3 f = go
   where
     go ::
-      (KnownNat n', KnownNat m') =>
       Network h n' ls' m' a ->
       Network k n' ls' m' b ->
       Network t n' ls' m' c ->
@@ -1010,6 +1088,8 @@ zipNetworkWith3 f = go
     go Output Output Output = Output
     go (hxy :- hs) (kxy :- ks) (txy :- ts) =
       let !d = f hxy kxy txy in d :- go hs ks ts
+    go (hxy ::- hs) (kxy ::- ks) (txy ::- ts) =
+      let !d = go hxy kxy txy in d ::- go hs ks ts
 
 data AdamParams a = AdamParams {beta1, beta2, epsilon :: !a}
   deriving (Show, Eq, Ord, Generic)
@@ -1054,6 +1134,7 @@ instance
   where
   rnf Output = ()
   rnf (h :- hs) = rnf h `seq` rnf hs
+  rnf (h ::- hs) = rnf h `seq` rnf hs
   {-# INLINE rnf #-}
 
 instance NFData (Weights l i o a) where
@@ -1109,6 +1190,9 @@ getNetworkBodyWith ::
   Get (Network h i xs o a)
 getNetworkBodyWith IsOutput = pure Output
 getNetworkBodyWith (IsCons _ ns') = (:-) <$> get <*> getNetworkBodyWith ns'
+getNetworkBodyWith (IsSkip sh ns') =
+  give sh $
+    (::-) <$> getNetworkBodyWith sh <*> getNetworkBodyWith ns'
 
 putNetworkWithHeader ::
   forall h i xs o a.
