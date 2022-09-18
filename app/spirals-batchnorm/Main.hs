@@ -163,10 +163,10 @@ dualSpiralTest Opts {..} = do
 
   let seeds =
         linear @40 (2 / sqrt 2)
-          :- batchnorm (sqrt $ 2 / 40)
+          :- batchnorm
           :- reLU_
           :- linear @25 (2 / 40)
-          :- batchnorm (sqrt $ 2 / 25)
+          :- batchnorm
           :- reLU_
           :- affine @10 (2 / sqrt 25)
           :- reLU_

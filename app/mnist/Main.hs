@@ -250,7 +250,7 @@ type BatchedNet =
    , L 'Lin 50
    , L 'BN 50
    , L (Act 'ReLU) 50
-   , L 'Aff 10
+   , L 'Lin 10
    , L (Act 'Softmax) 10
    ]
 
@@ -340,7 +340,7 @@ doTrain seed TrainOpts {..} = do
                                   & shuffleBuffered g shuffWindow
                                   & S.map (\(a, d) -> ((a, toDigitVector d), d))
                                   & chunksOfVector batchSize
-                          S.fold_ (flip (train @28 params)) nets id $
+                          S.fold_ (flip (train @PixelSize params)) nets id $
                             S.map (fst . U.unzip) trainBatches
                     )
               )
@@ -429,13 +429,13 @@ labelsFile = "labels.mnist"
 
 batchedNetSeed :: Network LayerSpec ImageSize BatchedNet 10 Float
 batchedNetSeed =
-  linear @300 @ImageSize (sqrt $ 2.0 / fromIntegral imageSize)
-    :- batchnorm (sqrt $ 2.0 / 300)
+  linear @300 @ImageSize 0.01
+    :- batchnorm
     :- reLU_
-    :- linear @50 (sqrt $ 2.0 / 300)
-    :- batchnorm (sqrt $ 2.0 / 300)
+    :- linear @50 0.01
+    :- batchnorm
     :- reLU_
-    :- affine @10 (sqrt $ 1.0 / 50)
+    :- linear @10 0.01
     :- softmax_
     :- Output
 
