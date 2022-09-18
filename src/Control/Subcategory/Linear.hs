@@ -278,7 +278,7 @@ duplicateAsCols' = liftOp1 $
     STrue ->
       op1 $ \x ->
         ( computeM $ duplicateAsCols @m @r @n @a x
-        , computeV . columnAt @0
+        , computeV . sumRows
         )
 
 duplicateAsRows' ::
@@ -300,7 +300,7 @@ duplicateAsRows' = liftOp1 $
     STrue ->
       op1 $ \x ->
         ( computeM $ duplicateAsRows @m @r @n @a x
-        , computeV . rowAt @0
+        , computeV . sumCols
         )
 
 sumRows' ::
