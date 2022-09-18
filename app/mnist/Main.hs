@@ -49,7 +49,7 @@ import Data.Massiv.Array (PrimMonad, Sz (..))
 import qualified Data.Massiv.Array as M
 import Data.Massiv.Array.IO (readImageAuto)
 import Data.Maybe (fromMaybe)
-import Data.Monoid (Sum (..))
+import Data.Monoid (Ap (..), Sum (..))
 import qualified Data.Persist as Persist
 import Data.Strict.Tuple (Pair (..))
 import Data.Time (defaultTimeLocale, formatTime, getZonedTime)
@@ -386,8 +386,13 @@ calcTestAccuracy n net =
       ( \dataSet ->
           let (inps, outs) = U.unzip dataSet
               ys' = predicts net inps
-           in accuracy outs ys'
+           in M.zipWith
+                (\l r -> if l == r then 1.0 else 0.0)
+                (M.fromUnboxedVector M.Par outs)
+                (M.fromUnboxedVector M.Par ys')
       )
+    >>> S.subst (getAp . M.foldMono (Ap . S.yield))
+    >>> SS.concats
     >>> L.purely S.fold_ L.mean
 
 puts :: MonadIO m => String -> m ()
