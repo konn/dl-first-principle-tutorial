@@ -63,6 +63,7 @@ module DeepLearning.NeuralNetowrk.Massiv (
 
   -- * Training
   LossFunction,
+  logLikelihood,
   crossEntropy,
   trainGD,
   trainGDF,
@@ -147,7 +148,7 @@ softmax_ = ActP
 passthru_ :: forall i a. LayerSpec (Act 'Id) i i a
 passthru_ = ActP
 
-batchnorm :: forall i a. a -> LayerSpec 'BN i i a
+batchnorm :: forall i a. LayerSpec 'BN i i a
 batchnorm = BNP
 
 affineMatL :: Lens' (Weights Aff i o a) (UMat i o a)
@@ -214,19 +215,14 @@ runLayer pass = \case
      in case pass of
           Train -> \x ->
             let !m = fromIntegral $ dimVal @m
-                batchMu = sumRows' x /. m
-                xRel = x - duplicateAsCols' batchMu
-                batchSigma = sumRows' (xRel * xRel) /. m
-                ivar = sqrt $ batchSigma +. 1e-12
-                gammax =
-                  duplicateAsCols' gamma * xRel / duplicateAsCols' ivar
+                batchMean = sumRows' x /. m
+                xRel = x - duplicateAsCols' batchMean
+                batchDev = sumRows' (xRel * xRel) /. m
+                xHat = xRel / duplicateAsCols' (sqrt (batchDev +. 1e-12))
+                x' = duplicateAsCols' gamma * xHat + duplicateAsCols' beta
                 bRP =
-                  isoVar2
-                    BatRP
-                    (\(BatRP z s) -> (z, s))
-                    batchMu
-                    batchSigma
-             in T2 (gammax + duplicateAsCols' beta) bRP
+                  isoVar2 BatRP (\(BatRP z s) -> (z, s)) batchMean batchDev
+             in T2 x' bRP
           Eval -> \x ->
             let eps = 1e-12
                 out1 =
@@ -399,10 +395,9 @@ gradNN ::
   , KnownNat m
   , U.Unbox a
   , Backprop a
-  , KnownNat i
-  , KnownNat o
   , Backprop k
   , VectorSpace k a
+  , KnownNetwork i ls o
   ) =>
   -- | Loss function
   LossFunction m o a ->
@@ -411,13 +406,26 @@ gradNN ::
   Network Weights i ls o a ->
   (Network Weights i ls o a, Network RecParams i ls o a)
 gradNN loss (inps, oups) recPs =
-  Bi.second snd
+  Bi.bimap ($ (1.0, 0.0)) snd
     . swap
-    . backprop
+    . backpropWith
       ( \net ->
           let !ysRecs' = runNN Train recPs net (auto inps)
            in T2 (loss (ysRecs' ^^. _1) (auto oups) /. fromIntegral (dimVal @m)) (ysRecs' ^^. _2)
       )
+
+logLikelihood ::
+  forall o m a.
+  ( KnownNat o
+  , KnownNat m
+  , U.Unbox a
+  , Backprop a
+  , Floating a
+  ) =>
+  LossFunction m o a
+logLikelihood yPred yTruth =
+  negate $
+    sumS (yTruth * log yPred + (1 - yTruth) * log (1 - yPred))
 
 crossEntropy ::
   forall o m a.
@@ -428,9 +436,8 @@ crossEntropy ::
   , Floating a
   ) =>
   LossFunction m o a
-crossEntropy ys' ys =
-  negate $
-    sumS (ys * log ys' + (1 - ys) * log (1 - ys'))
+crossEntropy yPred yTruth =
+  negate $ sumS $ yTruth * log yPred
 
 -- | The variant of 'trainGD' which accepts functorial inputs and outputs.
 trainGDF ::
@@ -620,7 +627,7 @@ randomNetwork g =
       (AffP _ :: LayerSpec _ i _ _) -> pure AffRP
       (LinP _ :: LayerSpec _ i _ _) -> pure LinRP
       (ActP :: LayerSpec _ _ _ _) -> pure $ ActRP sActivation
-      (BNP _ :: LayerSpec _ i _ _) -> pure $ BatRP 0.0 1.0
+      (BNP :: LayerSpec _ i _ _) -> pure $ BatRP 0.0 1.0
     <*> hmapNetworkM' \case
       (AffP s :: LayerSpec _ i _ _) -> do
         ws <- replicateMatA $ realToFrac <$> normal 0.0 (realToFrac s) g
@@ -629,7 +636,7 @@ randomNetwork g =
         ws <- replicateMatA $ realToFrac <$> normal 0.0 (realToFrac s) g
         pure $ LinW ws
       (ActP :: LayerSpec _ _ _ _) -> pure ActW
-      (BNP s :: LayerSpec _ i _ _) -> (`BatW` 0) <$> replicateVecA (realToFrac <$> normal 0.0 (realToFrac s) g)
+      (BNP :: LayerSpec _ i _ _) -> pure $ BatW 1.0 0.0
 
 simpleSomeNetwork ::
   forall i o a.

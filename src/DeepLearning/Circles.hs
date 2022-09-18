@@ -39,7 +39,7 @@ trainByGradientDescent ::
   NeuralNetwork 2 hs 1 Double ->
   NeuralNetwork 2 hs 1 Double
 trainByGradientDescent gamma epochs =
-  trainGDF gamma 0.1 epochs crossEntropy
+  trainGDF gamma 0.1 epochs logLikelihood
     . U.map \(ClusteredPoint pt clus) -> (pt ^. _Point, clusterNum clus)
 
 clusterNum :: Cluster -> V1 Double
@@ -53,7 +53,7 @@ trainByAdam ::
   NeuralNetwork 2 hs 1 Double ->
   NeuralNetwork 2 hs 1 Double
 trainByAdam gamma params epochs =
-  trainAdamF gamma 0.1 params epochs crossEntropy
+  trainAdamF gamma 0.1 params epochs logLikelihood
     . U.map \(ClusteredPoint pt clus) -> (pt ^. _Point, clusterNum clus)
 
 predict :: (V2 Double -> V1 Double) -> Point V2 Double -> Cluster
