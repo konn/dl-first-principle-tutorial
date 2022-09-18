@@ -390,13 +390,11 @@ type LossFunction m o a =
   forall s. Reifies s W => BVar s (UMat m o a) -> BVar s (UMat m o a) -> BVar s a
 
 gradNN ::
-  forall ls i o m a k.
+  forall ls i o m a.
   ( RealFloat a
   , KnownNat m
   , U.Unbox a
   , Backprop a
-  , Backprop k
-  , VectorSpace k a
   , KnownNetwork i ls o
   ) =>
   -- | Loss function
@@ -411,7 +409,7 @@ gradNN loss (inps, oups) recPs =
     . backpropWith
       ( \net ->
           let !ysRecs' = runNN Train recPs net (auto inps)
-           in T2 (loss (ysRecs' ^^. _1) (auto oups) /. fromIntegral (dimVal @m)) (ysRecs' ^^. _2)
+           in T2 (loss (ysRecs' ^^. _1) (auto oups)) (ysRecs' ^^. _2)
       )
 
 logLikelihood ::
@@ -488,6 +486,7 @@ trainGD gamma alpha n loss dataSet =
     trainGD_ gamma alpha n loss dataSet
 
 trainGD_ ::
+  forall m a i hs o k.
   ( KnownNat m
   , U.Unbox a
   , Backprop a
@@ -508,8 +507,10 @@ trainGD_ ::
 trainGD_ gamma alpha n loss dataSet = last . take n . iterate' step
   where
     step (NeuralNetwork ps ws) =
-      let (ws', ps') = gradNN loss dataSet ps ws
-       in NeuralNetwork (alpha .* ps' + (1 - alpha) .* ps) (ws - gamma .* ws')
+      let (dW, ps') = gradNN (\x y -> loss x y /. fromIntegral (dimVal @m)) dataSet ps ws
+       in NeuralNetwork
+            (alpha .* ps' + (1 - alpha) .* ps)
+            (ws - gamma .* dW)
 
 data AdamParams a = AdamParams {beta1, beta2, epsilon :: !a}
   deriving (Show, Eq, Ord, Generic, Functor, Foldable, Traversable)
@@ -545,9 +546,9 @@ trainAdam ::
   ( KnownNat m
   , U.Unbox a
   , Backprop a
-  , KnownNat i
   , VectorSpace k a
   , Backprop k
+  , KnownNat i
   ) =>
   RealFloat a =>
   -- | Learning rate (dt)
@@ -570,8 +571,8 @@ trainAdam_ ::
   , KnownNat m
   , U.Unbox a
   , Backprop a
-  , VectorSpace k a
   , Backprop k
+  , VectorSpace k a
   ) =>
   RealFloat a =>
   -- | Learning Rate (dt)
@@ -603,7 +604,8 @@ trainAdam_ gamma alpha AdamParams {..} n loss dataSet =
   SP.fst . last . take n . iterate' step . (:!: (reps 0.0 :!: reps 0.0))
   where
     step ((NeuralNetwork ps net) :!: (s :!: v)) =
-      let (dW, ps') = gradNN loss dataSet ps net
+      let (dW, ps') =
+            gradNN (\x y -> loss x y /. fromIntegral (dimVal @m)) dataSet ps net
           sN = beta2 .* s + (1.0 - beta2) .* (dW * dW)
           vN = beta1 .* v + (1.0 - beta1) .* dW
           !net' = net - (gamma .* vN) / sqrt (sN +. epsilon)
