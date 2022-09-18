@@ -434,13 +434,13 @@ labelsFile = "labels.mnist"
 
 batchedNetSeed :: Network LayerSpec ImageSize BatchedNet 10 Float
 batchedNetSeed =
-  linear @300 @ImageSize 0.01
+  linear @300 @ImageSize (sqrt $ 2.0 / fromIntegral imageSize)
     :- batchnorm
     :- reLU_
-    :- linear @50 0.01
+    :- linear @50 (sqrt $ 2.0 / 300)
     :- batchnorm
     :- reLU_
-    :- linear @10 0.01
+    :- linear @10 (sqrt $ 1.0 / 50)
     :- softmax_
     :- Output
 
