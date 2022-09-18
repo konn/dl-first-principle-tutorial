@@ -1,0 +1,13 @@
+resolver: lts-19.21
+work-dir: ".stack-ide"
+
+packages:
+- .
+
+ghc-options:
+  $locals: "-O0 -haddock"
+
+extra-deps:
+  # Workaround for GHC 9.0
+- github: konn/backprop
+  commit: d342e3db0c9d49caf01284d0ff128edf31974cc2

@@ -1,0 +1,14 @@
+cradle:
+  stack:
+    stackYaml: stack-ide.yaml
+    components:
+    - path: ./src
+      component: dl-first-principle-tutorial:lib
+    - path: "./app/iris"
+      component: dl-first-principle-tutorial:exe:iris
+    - path: "./app/circles"
+      component: dl-first-principle-tutorial:exe:circles
+    - path: "./app/spirals"
+      component: dl-first-principle-tutorial:exe:spirals-batchnorm
+    - path: "./app/mnist"
+      component: dl-first-principle-tutorial:exe:mnist
