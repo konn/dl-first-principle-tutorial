@@ -160,7 +160,7 @@ deriving anyclass instance (VectorSpace a a) => VectorSpace a (DigitVector a)
 type MNISTInput n = UMat n n
 
 toMNISTInput :: forall n a. (U.Unbox a, Fractional a) => UMat n n Word8 -> MNISTInput n a
-toMNISTInput = cmap ((/ 255) . realToFrac)
+toMNISTInput = cmap ((0.5 -) . (/ 255) . realToFrac)
 
 digits :: DigitVector Digit
 digits = tabulate id
