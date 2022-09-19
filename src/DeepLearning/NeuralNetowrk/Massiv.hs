@@ -543,7 +543,7 @@ trainGD_ ::
   (UMat m i a, UMat m o a) ->
   NeuralNetwork i hs o a ->
   NeuralNetwork i hs o a
-trainGD_ gamma alpha n loss dataSet = last . take n . iterate' step
+trainGD_ gamma alpha n loss dataSet = last . take (n + 1) . iterate' step
   where
     step (NeuralNetwork ps ws) =
       let (dW, ps') = gradNN (\x y -> loss x y /. fromIntegral (dimVal @m)) dataSet ps ws
@@ -640,7 +640,7 @@ trainAdam_ ::
   NeuralNetwork i hs o Double
   #-}
 trainAdam_ gamma alpha AdamParams {..} n loss dataSet =
-  SP.fst . last . take n . iterate' step . (:!: (reps 0.0 :!: reps 0.0))
+  SP.fst . last . take (n + 1) . iterate' step . (:!: (reps 0.0 :!: reps 0.0))
   where
     step ((NeuralNetwork ps net) :!: (s :!: v)) =
       let (dW, ps') =
