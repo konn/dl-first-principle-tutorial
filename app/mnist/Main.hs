@@ -317,7 +317,10 @@ doTrain seed TrainOpts {..} = do
             UIO.evaluate . force =<< readNetworkFile modelFile
           else do
             puts "# No model found. Initialising with seed..."
-            UIO.evaluate . force =<< randomNetwork globalStdGen netSeed
+            net <- UIO.evaluate . force =<< randomNetwork globalStdGen netSeed
+            liftIO $ BS.writeFile modelFile $ Persist.encode net
+            puts $ printf "Initial Model written to: %s" modelFile
+            pure net
       liftIO $ putNetworkInfo net0
       (numTrains, _) <-
         runResourceT $ readMNISTDataDir trainDataDir
