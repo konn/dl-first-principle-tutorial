@@ -246,6 +246,7 @@ data LayerSpec l n m a where
   LinP :: a -> LayerSpec 'Lin n m a
   ActP :: KnownActivation act => LayerSpec ( 'Act act) n n a
   BNP :: LayerSpec 'BN n n a
+  LNP :: LayerSpec 'LN n n a
 
 deriving instance Show a => Show (LayerSpec l n m a)
 

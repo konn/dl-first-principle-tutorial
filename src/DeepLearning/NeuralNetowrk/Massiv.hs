@@ -64,6 +64,7 @@ module DeepLearning.NeuralNetowrk.Massiv (
   softmax_,
   passthru_,
   batchnorm,
+  layernorm,
 
   -- * Training
   LossFunction,
@@ -158,6 +159,9 @@ passthru_ = ActP
 
 batchnorm :: forall i a. LayerSpec 'BN i i a
 batchnorm = BNP
+
+layernorm :: forall i a. LayerSpec 'LN i i a
+layernorm = LNP
 
 affineMatL :: Lens' (Weights Aff i o a) (UMat i o a)
 {-# INLINE affineMatL #-}
@@ -691,6 +695,7 @@ randomNetwork g =
       (LinP _ :: LayerSpec _ i _ _) -> pure LinRP
       (ActP :: LayerSpec _ _ _ _) -> pure $ ActRP sActivation
       (BNP :: LayerSpec _ i _ _) -> pure $ BatRP 0.0 1.0
+      (LNP :: LayerSpec _ i _ _) -> pure LayerNormRP
     <*> hmapNetworkM' \case
       (AffP s :: LayerSpec _ i _ _) -> do
         ws <- replicateMatA $ realToFrac <$> normal 0.0 (realToFrac s) g
@@ -700,6 +705,7 @@ randomNetwork g =
         pure $ LinW ws
       (ActP :: LayerSpec _ _ _ _) -> pure ActW
       (BNP :: LayerSpec _ i _ _) -> pure $ BatW 1.0 0.0
+      (LNP :: LayerSpec _ i _ _) -> pure $ LayerNormW 1.0 0.0
 
 simpleSomeNetwork ::
   forall i o a.
