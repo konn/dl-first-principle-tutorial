@@ -25,7 +25,7 @@
 
 module Main (main) where
 
-import Control.Applicative (optional, (<**>))
+import Control.Applicative (optional, (<**>), (<|>))
 import Control.Arrow
 import Control.DeepSeq (force)
 import Control.Exception (evaluate)
@@ -208,18 +208,22 @@ data ResampleOpts = ResampleOpts
 batchedName :: FilePath
 batchedName = "batched.dat"
 
+nobatchedName :: FilePath
+nobatchedName = "no-batched.dat"
+
 recognise :: RecognitionOpts -> IO ()
 recognise RecognitionOpts {..} = do
-  let modelPath = modelDir </> batchedName
-  putStrLn $ "Recognising: " <> input
-  batchedNet <- readNetworkFile @BatchedNet modelPath
+  let modelPath = modelDir </> modelName netFlavour
+  putStrLn $ "* Recognising: " <> input <> " with " <> show netFlavour
+  MkSomeNeuralNetwork batchedNet <- readSomeNetworkFile modelPath
+  putNetworkInfo batchedNet
 
   image <- fromGrayscaleImage <$> readImageAuto input
   when (M.size image /= Sz2 28 28) $
     error "Input image must be 28x28 pixels."
   let inp = toMNISTInput @PixelSize $ unsafeToMat image
   d <- evaluate $ predict batchedNet inp
-  putStrLn $ "* Digit recognised by batchnormed NN: " <> show d
+  putStrLn $ "Recognised digit: " <> show d
   pure ()
 
 readNetworkFile ::
@@ -230,6 +234,14 @@ readNetworkFile ::
 readNetworkFile inFile =
   either error pure . Persist.decode @(MNISTNN ls)
     =<< liftIO (BS.readFile inFile)
+
+readSomeNetworkFile ::
+  forall m.
+  (MonadIO m) =>
+  FilePath ->
+  m (SomeNeuralNetwork 784 10 Float)
+readSomeNetworkFile inFile =
+  either error pure . Persist.decode =<< liftIO (BS.readFile inFile)
 
 imageSize :: Int
 imageSize = 28 * 28
@@ -263,6 +275,17 @@ type PlainNet =
    , L (Act 'Softmax) 10
    ]
 
+data NetFlavour = Batched | NoBatched
+  deriving (Show, Eq, Ord, Generic)
+
+modelName :: NetFlavour -> FilePath
+modelName Batched = batchedName
+modelName NoBatched = nobatchedName
+
+networkSeed :: NetFlavour -> SomeNetwork LayerSpec ImageSize 10 Float
+networkSeed Batched = MkSomeNetwork batchedNetSeed
+networkSeed NoBatched = MkSomeNetwork plainNetSeed
+
 adams :: AdamParams Float
 adams = AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-16}
 
@@ -279,87 +302,90 @@ doTrain ::
   m ()
 doTrain seed TrainOpts {..} = do
   puts "* Training Mode"
-  now <- liftIO getZonedTime
-  createDirectoryIfMissing True modelDir
-  let stamp = formatTime defaultTimeLocale "%Y%m%d-%H%M%S" now
-  there <- doesFileExist modelFile
-  batchedNN <-
-    if there
-      then do
-        puts "# Model file found. Resuming training..."
-        copyFile modelFile (modelFile <> "." <> stamp <> ".bak")
-        UIO.evaluate . force =<< readNetworkFile modelFile
-      else do
-        puts "# No model found. Initialising with seed..."
-        UIO.evaluate . force =<< randomNetwork globalStdGen batchedNetSeed
+  puts $ "Network type: " <> show netFlavour
+  let modelFile = modelDir </> modelName netFlavour
+  case networkSeed netFlavour of
+    MkSomeNetwork netSeed -> do
+      now <- liftIO getZonedTime
+      createDirectoryIfMissing True modelDir
+      let stamp = formatTime defaultTimeLocale "%Y%m%d-%H%M%S" now
+      there <- doesFileExist modelFile
+      net0 <-
+        if there
+          then do
+            puts "# Model file found. Resuming training..."
+            copyFile modelFile (modelFile <> "." <> stamp <> ".bak")
+            UIO.evaluate . force =<< readNetworkFile modelFile
+          else do
+            puts "# No model found. Initialising with seed..."
+            UIO.evaluate . force =<< randomNetwork globalStdGen netSeed
+      liftIO $ putNetworkInfo net0
+      (numTrains, _) <-
+        runResourceT $ readMNISTDataDir trainDataDir
+      let (numBat0, r) = numTrains `quotRem` batchSize
+          numBatches
+            | r == 0 = numBat0
+            | otherwise = numBat0 + 1
 
-  (numTrains, _) <-
-    runResourceT $ readMNISTDataDir trainDataDir
-  let (numBat0, r) = numTrains `quotRem` batchSize
-      numBatches
-        | r == 0 = numBat0
-        | otherwise = numBat0 + 1
+      puts $
+        printf
+          "# %d training data given, divided into %d minibatches, each of size %d"
+          numTrains
+          numBatches
+          batchSize
+      let shuffWindow = batchSize * max 1 (numBatches `quot` 100)
 
-  puts $
-    printf
-      "# %d training data given, divided into %d minibatches, each of size %d"
-      numTrains
-      numBatches
-      batchSize
-  let shuffWindow = batchSize * max 1 (numBatches `quot` 100)
+          intvl = fromMaybe 1 outputInterval
+          (blk, resid) = epochs `quotRem` intvl
+          epcs =
+            foldr (:) (replicate (min 1 resid) resid) $ replicate blk intvl
 
-      intvl = fromMaybe 1 outputInterval
-      (blk, resid) = epochs `quotRem` intvl
-      epcs =
-        foldr (:) (replicate (min 1 resid) resid) $ replicate blk intvl
-
-  void $ runResourceT $ do
-    (numTests, tests0) <- readMNISTDataDir testDataDir
-    puts $ printf "# %d test datasets given" numTests
-    !testAcc <-
-      calcTestAccuracy batchSize batchedNN $ S.map (Bi.first toMNISTInput) tests0
-    puts $ printf "Initial Test Accuracy: %f%%" $ testAcc * 100
-    pure numTests
-  void $
-    foldlM
-      ( \(net :!: es) ecount -> do
-          let !es' = es + ecount
-          puts $ printf "** Epoch #%d..%d Started." es es'
-          !net' <-
-            appEndoM
-              ( fold $
-                  replicate
-                    ecount
-                    ( EndoM $ \ !nets -> do
-                        g <- thawGen seed
-                        runResourceT $ do
-                          (_, !trainDataSet) <- readMNISTDataDir trainDataDir
-                          let !trainBatches =
-                                trainDataSet
-                                  & S.map (Bi.first toMNISTInput)
-                                  & shuffleBuffered g shuffWindow
-                                  & S.map (\(a, d) -> ((a, toDigitVector d), d))
-                                  & chunksOfVector batchSize
-                          S.fold_ (flip (train @PixelSize params)) nets id $
-                            S.map (fst . U.unzip) trainBatches
-                    )
-              )
-              net
-          runResourceT $ do
-            (_, tests) <- readMNISTDataDir testDataDir
-            !acc <-
-              calcTestAccuracy batchSize net' $
-                S.map (Bi.first toMNISTInput) tests
-            puts $ printf "Test Accuracy: %f%%" $ acc * 100
-          mask_ $ do
-            liftIO $ BS.writeFile modelFile $ Persist.encode net'
-            puts $ printf "Model file written to: %s" modelFile
-          pure (net' :!: es')
-      )
-      (batchedNN :!: 0)
-      epcs
+      void $ runResourceT $ do
+        (numTests, tests0) <- readMNISTDataDir testDataDir
+        puts $ printf "# %d test datasets given" numTests
+        !testAcc <-
+          calcTestAccuracy batchSize net0 $ S.map (Bi.first toMNISTInput) tests0
+        puts $ printf "Initial Test Accuracy: %f%%" $ testAcc * 100
+        pure numTests
+      void $
+        foldlM
+          ( \(net :!: es) ecount -> do
+              let !es' = es + ecount
+              puts $ printf "** Epoch #%d..%d Started." es es'
+              !net' <-
+                appEndoM
+                  ( fold $
+                      replicate
+                        ecount
+                        ( EndoM $ \ !nets -> do
+                            g <- thawGen seed
+                            runResourceT $ do
+                              (_, !trainDataSet) <- readMNISTDataDir trainDataDir
+                              let !trainBatches =
+                                    trainDataSet
+                                      & S.map (Bi.first toMNISTInput)
+                                      & shuffleBuffered g shuffWindow
+                                      & S.map (\(a, d) -> ((a, toDigitVector d), d))
+                                      & chunksOfVector batchSize
+                              S.fold_ (flip (train @PixelSize params)) nets id $
+                                S.map (fst . U.unzip) trainBatches
+                        )
+                  )
+                  net
+              runResourceT $ do
+                (_, tests) <- readMNISTDataDir testDataDir
+                !acc <-
+                  calcTestAccuracy batchSize net' $
+                    S.map (Bi.first toMNISTInput) tests
+                puts $ printf "Test Accuracy: %f%%" $ acc * 100
+              mask_ $ do
+                liftIO $ BS.writeFile modelFile $ Persist.encode net'
+                puts $ printf "Model file written to: %s" modelFile
+              pure (net' :!: es')
+          )
+          (net0 :!: 0)
+          epcs
   where
-    modelFile = modelDir </> batchedName
     params =
       MNISTParams
         { timeStep = gamma
@@ -377,7 +403,7 @@ calcTestAccuracy ::
   PrimMonad m =>
   -- | Batchsize
   Int ->
-  NeuralNetwork 784 BatchedNet 10 Float ->
+  NeuralNetwork 784 net 10 Float ->
   Stream (Of (MNISTInput PixelSize Float, Digit)) (ResourceT m) r ->
   ResourceT m Double
 calcTestAccuracy n net =
@@ -466,6 +492,7 @@ data TrainOpts = TrainOpts
   , modelDir :: !FilePath
   , trainDataDir :: !FilePath
   , testDataDir :: !FilePath
+  , netFlavour :: !NetFlavour
   }
   deriving (Show, Eq, Ord)
 
@@ -527,9 +554,10 @@ trainOptsP = do
         <> Opts.value 0.1
         <> Opts.help "dumping factor for moving average used in batchnorm layer"
         <> Opts.showDefault
+  netFlavour <- flavourFlagP
   pure TrainOpts {..}
 
-data RecognitionOpts = RecognitionOpts {modelDir :: !FilePath, input :: !FilePath}
+data RecognitionOpts = RecognitionOpts {modelDir :: !FilePath, input :: !FilePath, netFlavour :: !NetFlavour}
   deriving (Show, Eq, Ord, Generic)
 
 recogniseOptsP :: Opts.Parser RecognitionOpts
@@ -545,7 +573,16 @@ recogniseOptsP = do
     Opts.strArgument $
       Opts.metavar "FILE"
         <> Opts.help "A path to the gray-scale image to recognise"
+  netFlavour <- flavourFlagP
   pure RecognitionOpts {..}
+
+flavourFlagP :: Opts.Parser NetFlavour
+flavourFlagP =
+  Opts.flag'
+    NoBatched
+    (Opts.long "without-batchnorm" <> Opts.help "Use the model without batchnorm")
+    <|> Opts.flag' Batched (Opts.long "with-batchnorm" <> Opts.help "Use the model WITH batchnorm (default)")
+    <|> pure Batched
 
 workDir :: FilePath
 workDir = "workspace" </> "mnist"
