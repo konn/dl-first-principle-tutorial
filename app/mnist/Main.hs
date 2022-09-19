@@ -364,7 +364,7 @@ doTrain seed TrainOpts {..} = do
                               let !trainBatches =
                                     trainDataSet
                                       & S.map (Bi.first toMNISTInput)
-                                      & shuffleBuffered g shuffWindow
+                                      & shuffleBuffered' g shuffWindow
                                       & S.map (\(a, d) -> ((a, toDigitVector d), d))
                                       & chunksOfVector batchSize
                               S.fold_ (flip (train @PixelSize params)) nets id $
@@ -586,6 +586,7 @@ flavourFlagP =
 
 workDir :: FilePath
 workDir = "workspace" </> "mnist"
+
 
 putNetworkInfo :: KnownNat i => NeuralNetwork i hs o a -> IO ()
 putNetworkInfo net =
