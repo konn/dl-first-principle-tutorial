@@ -245,6 +245,8 @@ data Weights l i o a where
 
 deriving instance (Eq a, U.Unbox a) => Eq (Weights l i o a)
 
+deriving instance (Show a, U.Unbox a) => Show (Weights l i o a)
+
 liftBinWs ::
   (UMat i o a -> UMat i o a -> UMat i o a) ->
   (UVec o a -> UVec o a -> UVec o a) ->
@@ -371,6 +373,7 @@ data RecParams l i o a where
   BatRP :: {mean, deviation :: !(UVec i a)} -> RecParams 'BN i i a
 
 deriving instance (Eq a, U.Unbox a) => Eq (RecParams l i o a)
+deriving instance (Show a, U.Unbox a) => Show (RecParams l i o a)
 
 liftBinRP ::
   (UVec o a -> UVec o a -> UVec o a) ->
