@@ -26,6 +26,7 @@ source-repository head
 library
   exposed-modules:
       Control.Subcategory.Linear
+      Data.Deriving.Numeric
       Data.Format.MNIST
       Data.Format.SpaceSeparated
       DeepLearning.Circles
