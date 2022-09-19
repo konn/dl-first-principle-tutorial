@@ -16,7 +16,6 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE NoStarIsType #-}
@@ -29,7 +28,6 @@ import Control.Applicative (optional, (<**>), (<|>))
 import Control.Arrow
 import Control.DeepSeq (force)
 import Control.Exception (evaluate)
-import Control.Foldl (EndoM (..))
 import qualified Control.Foldl as L
 import Control.Lens hiding (Snoc, (:>))
 import Control.Monad (when)
@@ -41,9 +39,10 @@ import Control.Subcategory.Linear (UMat, unMat, unsafeToMat)
 import qualified Data.Bifunctor as Bi
 import qualified Data.ByteString as BS
 import qualified Data.DList as DL
-import Data.Foldable (fold, foldlM)
+import Data.Foldable (foldlM)
 import Data.Functor (void)
 import Data.Functor.Of (Of (..))
+import Data.Generics.Labels ()
 import qualified Data.Heap as H
 import Data.Massiv.Array (PrimMonad, Sz (..))
 import qualified Data.Massiv.Array as M
@@ -353,25 +352,22 @@ doTrain seed TrainOpts {..} = do
               let !es' = es + ecount
               puts $ printf "** Epoch #%d..%d Started." es es'
               !net' <-
-                appEndoM
-                  ( fold $
-                      replicate
-                        ecount
-                        ( EndoM $ \ !nets -> do
-                            g <- thawGen seed
-                            runResourceT $ do
-                              (_, !trainDataSet) <- readMNISTDataDir trainDataDir
-                              let !trainBatches =
-                                    trainDataSet
-                                      & S.map (Bi.first toMNISTInput)
-                                      & shuffleBuffered' g shuffWindow
-                                      & S.map (\(a, d) -> ((a, toDigitVector d), d))
-                                      & chunksOfVector batchSize
-                              S.fold_ (flip (train @PixelSize params)) nets id $
-                                S.map (fst . U.unzip) trainBatches
-                        )
+                foldlM
+                  ( \ !nn _ -> do
+                      g <- thawGen seed
+                      runResourceT $ do
+                        (_, !trainDataSet) <- readMNISTDataDir trainDataDir
+                        let !trainBatches =
+                              trainDataSet
+                                & S.map (Bi.first toMNISTInput)
+                                & shuffleBuffered' g shuffWindow
+                                & S.map (\(a, d) -> ((a, toDigitVector d), d))
+                                & chunksOfVector batchSize
+                        S.fold_ (flip $ train @PixelSize params) nn id $
+                          S.map (fst . U.unzip) trainBatches
                   )
                   net
+                  [0 .. ecount - 1]
               runResourceT $ do
                 (_, tests) <- readMNISTDataDir testDataDir
                 !acc <-
@@ -388,7 +384,7 @@ doTrain seed TrainOpts {..} = do
   where
     params =
       MNISTParams
-        { timeStep = gamma
+        { timeStep = timeStep
         , dumpingFactor
         , adamParams = adams
         }
@@ -487,7 +483,7 @@ data TrainOpts = TrainOpts
   { epochs :: !Int
   , batchSize :: !Int
   , outputInterval :: !(Maybe Int)
-  , gamma :: !Float
+  , timeStep :: !Float
   , dumpingFactor :: !Float
   , modelDir :: !FilePath
   , trainDataDir :: !FilePath
@@ -506,12 +502,14 @@ trainOptsP = do
         <> Opts.showDefault
         <> Opts.metavar "N"
         <> Opts.help "# of epochs"
-  gamma <-
+  timeStep <-
     Opts.option Opts.auto $
-      Opts.long "gamma"
+      Opts.long "time-step"
+        <> Opts.long "dt"
+        <> Opts.long "learning-rate"
         <> Opts.short 'g'
-        <> Opts.value 0.001
-        <> Opts.metavar "GAMMA"
+        <> Opts.value 0.1
+        <> Opts.metavar "DT"
         <> Opts.showDefault
         <> Opts.help "Learning rate"
   outputInterval <-
@@ -586,7 +584,6 @@ flavourFlagP =
 
 workDir :: FilePath
 workDir = "workspace" </> "mnist"
-
 
 putNetworkInfo :: KnownNat i => NeuralNetwork i hs o a -> IO ()
 putNetworkInfo net =
