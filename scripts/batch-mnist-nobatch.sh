@@ -7,8 +7,8 @@ module load BaseCPU
 PATH="${HOME}/.local/bin:${HOME}/.ghcup/bin:${PATH}"
 cd "${PBS_O_WORKDIR}" || exit
 MODEL_PATH="$(pwd)/workspace/mnist/models"
-time stack exec -- mnist train --adam -b 500 --dt 0.01 -M "${MODEL_PATH}" +RTS -N32 -s 
+time stack exec -- mnist train -b 1000 --without-batchnorm -M "${MODEL_PATH}" +RTS -N32 -s 
 seq 0 9 | while read -r i; do
   IMAGE="./data/mnist/my-digits/mnist-digit-${i}.png"
-  time stack exec -- mnist recognise -M "${MODEL_PATH}" "${IMAGE}"
+  time stack exec -- mnist recognise --without-batchnorm -M "${MODEL_PATH}" "${IMAGE}"
 done
