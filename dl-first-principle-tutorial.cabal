@@ -231,7 +231,7 @@ executable mnist
       Paths_dl_first_principle_tutorial
   hs-source-dirs:
       app/mnist
-  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -fsimpl-tick-factor=1000 -O2 -threaded -with-rtsopts=-N
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -fsimpl-tick-factor=1000 -O2 -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       ad
     , adjunctions
