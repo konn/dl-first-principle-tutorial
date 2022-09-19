@@ -67,6 +67,7 @@ module DeepLearning.NeuralNetowrk.Massiv.Types (
   Lin,
   Act,
   BN,
+  LN,
 
   -- * Operators for manipulating networks
   withKnownNeuralNetwork,
@@ -103,7 +104,17 @@ import Generic.Data
 import Numeric.Backprop
 import Type.Reflection (typeRep)
 
-data LayerKind = Aff | Lin | Act Activation | BN
+data LayerKind
+  = -- | Affine transformation
+    Aff
+  | -- | Linear transformation layer without bias (to be combined with layer or batch nomarlisation)
+    Lin
+  | -- | Activation layer
+    Act Activation
+  | -- | Batch normalisation layer
+    BN
+  | -- | Layer normalisation layer
+    LN
   deriving (Show, Eq, Ord, Generic)
   deriving anyclass (Persist)
 
@@ -186,6 +197,7 @@ data SLayerKind (l :: LayerKind) n m where
   SLin :: SLayerKind 'Lin n m
   SAct :: SActivation a -> SLayerKind ( 'Act a) n n
   SBN :: SLayerKind 'BN n n
+  SLN :: SLayerKind 'LN n n
 
 withKnownLayerKind :: (KnownNat n, KnownNat m) => SLayerKind l n m -> (KnownLayerKind l n m => r) -> r
 {-# INLINE withKnownLayerKind #-}
@@ -212,6 +224,10 @@ instance (n ~ m) => Given (SLayerKind 'BN n m) where
   given = SBN
   {-# INLINE given #-}
 
+instance (n ~ m) => Given (SLayerKind 'LN n m) where
+  given = SLN
+  {-# INLINE given #-}
+
 type Aff = 'Aff
 
 type Lin = 'Lin
@@ -219,6 +235,8 @@ type Lin = 'Lin
 type Act = 'Act
 
 type BN = 'BN
+
+type LN = 'LN
 
 type LayerLike = LayerKind -> Nat -> Nat -> Type -> Type
 
@@ -242,6 +260,7 @@ data Weights l i o a where
   LinW :: !(UMat i o a) -> Weights 'Lin i o a
   ActW :: Weights ( 'Act act) i i a
   BatW :: {scale, shift :: !(UVec i a)} -> Weights 'BN i i a
+  LayerNormW :: {scaleLN, shiftLN :: !(UVec i a)} -> Weights 'LN i i a
 
 deriving instance (Eq a, U.Unbox a) => Eq (Weights l i o a)
 
@@ -258,6 +277,7 @@ liftBinWs fW fV (AffW w b) (AffW w' b') = AffW (fW w w') (fV b b')
 liftBinWs fW _ (LinW w) (LinW w') = LinW (fW w w')
 liftBinWs _ _ l@ActW ActW {} = l
 liftBinWs _ fV (BatW w b) (BatW w' b') = BatW (fV w w') (fV b b')
+liftBinWs _ fV (LayerNormW w b) (LayerNormW w' b') = LayerNormW (fV w w') (fV b b')
 
 liftUnWs ::
   (UMat i o a -> UMat i o a) ->
@@ -269,6 +289,7 @@ liftUnWs fW fV (AffW w b) = AffW (fW w) (fV b)
 liftUnWs fW _ (LinW w) = LinW (fW w)
 liftUnWs _ _ l@ActW = l
 liftUnWs _ fV (BatW scale shift) = BatW (fV scale) (fV shift)
+liftUnWs _ fV (LayerNormW scale shift) = LayerNormW (fV scale) (fV shift)
 
 instance (KnownLayerKind l i o, U.Unbox a, Floating a) => Num (Weights l i o a) where
   (+) = liftBinWs (+) (+)
@@ -338,6 +359,7 @@ instance
     SLin -> LinW <$> reps
     SAct _ -> const ActW
     SBN -> BatW <$> reps <*> reps
+    SLN -> LayerNormW <$> reps <*> reps
   {-# INLINE reps #-}
   (.*) = liftUnWs <$> (.*) <*> (.*)
   {-# INLINE (.*) #-}
@@ -357,11 +379,13 @@ instance
   LinW w >.< LinW w' = w >.< w'
   ActW >.< ActW {} = 0
   BatW w b >.< BatW w' b' = w >.< w' + b >.< b'
+  LayerNormW w b >.< LayerNormW w' b' = w >.< w' + b >.< b'
   {-# INLINE (>.<) #-}
   sumS (AffW w b) = sumS w + sumS b
   sumS (LinW w) = sumS w
   sumS ActW = 0
   sumS (BatW mu sigma) = sumS mu + sumS sigma
+  sumS (LayerNormW mu sigma) = sumS mu + sumS sigma
   {-# INLINE sumS #-}
 
 -- | Parameters updated by step-by-step, but not optimised by backprop.
@@ -371,8 +395,10 @@ data RecParams l i o a where
   LinRP :: RecParams 'Lin i o a
   ActRP :: !(SActivation act) -> RecParams ( 'Act act) i i a
   BatRP :: {mean, deviation :: !(UVec i a)} -> RecParams 'BN i i a
+  LayerNormRP :: RecParams 'LN i i a
 
 deriving instance (Eq a, U.Unbox a) => Eq (RecParams l i o a)
+
 deriving instance (Show a, U.Unbox a) => Show (RecParams l i o a)
 
 liftBinRP ::
@@ -386,6 +412,7 @@ liftBinRP _ l@LinRP LinRP {} = l
 liftBinRP _ l@(ActRP _) ActRP {} = l
 liftBinRP fV (BatRP mu sigma) (BatRP mu' sigma') =
   BatRP (fV mu mu') (fV sigma sigma')
+liftBinRP _ l@LayerNormRP LayerNormRP {} = l
 
 liftUnRP ::
   (UVec o a -> UVec o a) ->
@@ -396,6 +423,7 @@ liftUnRP _ l@AffRP = l
 liftUnRP _ l@LinRP = l
 liftUnRP _ l@(ActRP _) = l
 liftUnRP fV (BatRP mu sigma) = BatRP (fV mu) (fV sigma)
+liftUnRP _ l@LayerNormRP = l
 
 instance (KnownLayerKind l i o, U.Unbox a, Floating a) => Num (RecParams l i o a) where
   (+) = liftBinRP (+)
@@ -422,6 +450,7 @@ instance
     SLin -> const LinRP
     SAct sa -> const $ ActRP sa
     SBN -> BatRP <$> reps <*> reps
+    SLN -> const LayerNormRP
   {-# INLINE reps #-}
   (.*) = liftUnRP <$> (.*)
   {-# INLINE (.*) #-}
@@ -441,11 +470,13 @@ instance
   LinRP >.< LinRP {} = 0
   ActRP _ >.< ActRP {} = 0
   BatRP mu sigma >.< BatRP mu' sigma' = mu >.< mu' + sigma >.< sigma'
+  LayerNormRP >.< LayerNormRP = 0
   {-# INLINE (>.<) #-}
   sumS AffRP = 0
   sumS LinRP = 0
   sumS (ActRP _) = 0
   sumS (BatRP mu sigma) = sumS mu + sumS sigma
+  sumS LayerNormRP = 0
   {-# INLINE sumS #-}
 
 instance (KnownLayerKind l i o, U.Unbox a, Floating a) => Fractional (RecParams l i o a) where
@@ -502,10 +533,12 @@ instance
     l@AffRP -> l
     l@LinRP -> l
     l@(ActRP _) -> l
+    l@LayerNormRP -> l
     BatRP l r -> BatRP (zero l) (zero r)
   one = \case
     AffRP -> AffRP
     LinRP -> LinRP
+    l@LayerNormRP -> l
     ActRP s -> ActRP s
     BatRP l r -> BatRP (one l) (one r)
   add l@AffRP AffRP {} = l
@@ -513,6 +546,7 @@ instance
   add l@(ActRP _) ActRP {} = l
   add (BatRP mu sigma) (BatRP mu' sigma') =
     BatRP (add mu mu') (add sigma sigma')
+  add l@LayerNormRP LayerNormRP {} = l
   {-# INLINE add #-}
 
 instance (forall l x y. Semigroup (h l x y a)) => Semigroup (Network h i ls o a) where
@@ -528,17 +562,20 @@ instance (KnownNat i, KnownNat o, U.Unbox a, Num a) => Backprop (Weights l i o a
     LinW {} -> LinW 0
     l@ActW {} -> l
     BatW {} -> BatW 0 0
+    LayerNormW {} -> LayerNormW 0 0
   {-# INLINE zero #-}
   one = \case
     AffW {} -> AffW 1 1
     LinW {} -> LinW 1
     l@ActW {} -> l
     BatW {} -> BatW 1 1
+    LayerNormW {} -> LayerNormW 1 1
   {-# INLINE one #-}
   add (AffW mat vec) (AffW mat' vec') = AffW (add mat mat') (add vec vec')
   add (LinW mat) (LinW mat') = LinW (add mat mat')
   add l@ActW {} ActW {} = l
   add (BatW a b) (BatW a' b') = BatW (a + a') (b + b')
+  add (LayerNormW a b) (LayerNormW a' b') = LayerNormW (a + a') (b + b')
   {-# INLINE add #-}
 
 data Spec = L LayerKind Nat | Skip [Spec]
@@ -876,6 +913,10 @@ fromNetworkHeader' (Single kind dim : rest) =
         Refl <- dimCheck @i @o' "Batchnorm layer"
         MkSomeNetworkShape' net <- fromNetworkHeader' @i @o rest
         pure $ MkSomeNetworkShape' $ IsCons SBN net
+      LN -> do
+        Refl <- dimCheck @i @o' "Layer normalisation layer"
+        MkSomeNetworkShape' net <- fromNetworkHeader' @i @o rest
+        pure $ MkSomeNetworkShape' $ IsCons SLN net
 fromNetworkHeader' (Residual block : rest) = do
   MkSomeNetworkShape' block' <- fromNetworkHeader' @i @i block
   MkSomeNetworkShape' rest' <- fromNetworkHeader' @i @o rest
@@ -903,6 +944,7 @@ demoteLayerKind SAff = Aff
 demoteLayerKind SLin = Lin
 demoteLayerKind (SAct sa) = Act $ activationVal sa
 demoteLayerKind SBN = BN
+demoteLayerKind SLN = LN
 
 type KnownNetwork i xs o = (KnownNat i, KnownNat o, Given (NetworkShape i xs o))
 
@@ -1132,7 +1174,7 @@ data NetworkStat = NetworkStat {parameters :: Sum Int, layers :: DL.DList LayerI
   deriving (Show, Eq, Ord, Generic)
   deriving (Semigroup, Monoid) via Generically NetworkStat
 
-data LayerInfo = AffL !Int | LinL !Int | ActL Activation | BatchL !Int
+data LayerInfo = AffL !Int | LinL !Int | ActL Activation | BatchL !Int | LayerNormL !Int
   deriving (Show, Eq, Ord, Generic)
 
 networkStat :: KnownNat i => NeuralNetwork i hs o a -> NetworkStat
@@ -1155,6 +1197,11 @@ networkStat =
         { parameters = Sum $ 4 * dimVal @o
         , layers = DL.singleton $ BatchL $ dimVal @o
         }
+    (LayerNormRP {} :: RecParams _ i o a) ->
+      NetworkStat
+        { parameters = Sum $ dimVal @i * dimVal @o
+        , layers = DL.singleton $ LayerNormL $ dimVal @o
+        }
 
 instance
   ( NFData a
@@ -1173,6 +1220,7 @@ instance NFData (Weights l i o a) where
   rnf (LinW mat) = rnf mat
   rnf ActW = ()
   rnf (BatW vec vec') = rnf vec `seq` rnf vec'
+  rnf (LayerNormW vec vec') = rnf vec `seq` rnf vec'
   {-# INLINE rnf #-}
 
 instance NFData (SActivation a) where
@@ -1187,6 +1235,7 @@ instance NFData (RecParams l i o a) where
   rnf LinRP = ()
   rnf (ActRP sa) = rnf sa
   rnf (BatRP vec vec') = rnf vec `seq` rnf vec'
+  rnf LayerNormRP = ()
   {-# INLINE rnf #-}
 
 getNetworkWith ::
@@ -1297,10 +1346,12 @@ instance
     SLin -> LinW <$> get
     (SAct _) -> pure ActW
     SBN -> BatW <$> get <*> get
+    SLN -> LayerNormW <$> get <*> get
   put (AffW mat vec) = put mat *> put vec
   put (LinW mat) = put mat
   put ActW = pure ()
   put (BatW vec vec') = put vec *> put vec'
+  put (LayerNormW vec vec') = put vec *> put vec'
   {-# INLINE put #-}
 
 instance
@@ -1312,8 +1363,10 @@ instance
     SLin -> pure LinRP
     SAct sact -> pure $ ActRP sact
     SBN -> BatRP <$> get <*> get
+    SLN -> pure LayerNormRP
   put AffRP = pure ()
   put LinRP = pure ()
-  put ActRP {} = pure ()
+  put (ActRP _) = pure ()
   put (BatRP vec vec') = put vec *> put vec'
+  put LayerNormRP = pure ()
   {-# INLINE put #-}

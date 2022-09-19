@@ -13,6 +13,7 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedLabels #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE PolyKinds #-}
@@ -112,7 +113,7 @@ module DeepLearning.NeuralNetowrk.Massiv (
 ) where
 
 import Control.Applicative (liftA2)
-import Control.Lens (Lens', lens, _1, _2)
+import Control.Lens (Lens', iso, lens, _1, _2)
 import Control.Subcategory.Linear
 import qualified Data.Bifunctor as Bi
 import Data.Generics.Labels ()
@@ -185,6 +186,18 @@ batchNormL =
     $ const
     $ \BatchLayer {..} -> BatW {..}
 
+data LayerNormLayer i a = LayerNormLayer {scale, shift :: UVec i a}
+  deriving (Show, Generic)
+
+deriving anyclass instance
+  (KnownNat i, M.Numeric M.U a, U.Unbox a) => Backprop (LayerNormLayer i a)
+
+layerNormL :: Lens' (Weights LN i i a) (LayerNormLayer i a)
+layerNormL =
+  iso
+    (\LayerNormW {scaleLN, shiftLN} -> LayerNormLayer {scale = scaleLN, shift = shiftLN})
+    $ \LayerNormLayer {..} -> LayerNormW {scaleLN = scale, shiftLN = shift}
+
 data Pass = Train | Eval
   deriving (Show, Eq, Ord, Generic, Bounded, Enum)
 
@@ -236,6 +249,15 @@ runLayer pass = \case
                   (x - auto (computeM $ duplicateAsCols mu))
                     / auto (computeM (duplicateAsCols (sqrt (sigma +. eps))))
              in T2 (duplicateAsCols' gamma * out1 + duplicateAsCols' beta) (auto l)
+  (l@LayerNormRP {} :: RecParams _ i _ a) -> \lay x ->
+    let coeffs = lay ^^. layerNormL
+        i = fromIntegral $ dimVal @i
+        mean = sumCols' x /. i
+        xRel = x - duplicateAsRows' mean
+        dev = sumCols' (xRel * xRel) /. i
+        xHat = (x - duplicateAsRows' mean) / sqrt (duplicateAsRows' dev + 1e-12)
+        x' = duplicateAsCols' (coeffs ^^. #scale) * xHat - duplicateAsCols' (coeffs ^^. #shift)
+     in T2 x' (auto l)
 
 applyActivatorBV ::
   ( Reifies s W
