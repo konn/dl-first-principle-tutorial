@@ -202,7 +202,7 @@ accuracy =
 data MNISTParams a = MNISTParams
   { timeStep :: !a
   , dumpingFactor :: !a
-  , adamParams :: !(AdamParams a)
+  , adamParams :: !(Maybe (AdamParams a))
   }
   deriving (Show, Eq, Ord, Generic, Functor, Foldable, Traversable)
 
@@ -235,9 +235,17 @@ train ::
   NeuralNetwork (n * n) ls 10 Float
   #-}
 train MNISTParams {..} =
-  trainAdamF
-    timeStep
-    dumpingFactor
-    adamParams
-    1
-    crossEntropy
+  case adamParams of
+    Just ap ->
+      trainAdamF
+        timeStep
+        dumpingFactor
+        ap
+        1
+        crossEntropy
+    Nothing ->
+      trainGDF
+        timeStep
+        dumpingFactor
+        1
+        crossEntropy

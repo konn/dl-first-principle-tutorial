@@ -285,9 +285,6 @@ networkSeed :: NetFlavour -> SomeNetwork LayerSpec ImageSize 10 Float
 networkSeed Batched = MkSomeNetwork batchedNetSeed
 networkSeed NoBatched = MkSomeNetwork plainNetSeed
 
-adams :: AdamParams Float
-adams = AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-16}
-
 doTrain ::
   forall m g r.
   ( MonadIO m
@@ -389,7 +386,10 @@ doTrain seed TrainOpts {..} = do
       MNISTParams
         { timeStep = timeStep
         , dumpingFactor
-        , adamParams = adams
+        , adamParams =
+            case optimisation of
+              GD -> Nothing
+              Adam ap -> Just ap
         }
 
 chunksOfVector :: (U.Unbox a, PrimMonad m) => Int -> Stream (Of a) m r -> Stream (Of (U.Vector a)) m r
@@ -492,6 +492,7 @@ data TrainOpts = TrainOpts
   , trainDataDir :: !FilePath
   , testDataDir :: !FilePath
   , netFlavour :: !NetFlavour
+  , optimisation :: !Optimisation
   }
   deriving (Show, Eq, Ord)
 
@@ -556,7 +557,36 @@ trainOptsP = do
         <> Opts.help "dumping factor for moving average used in batchnorm layer"
         <> Opts.showDefault
   netFlavour <- flavourFlagP
+  optimisation <-
+    adamP
+      <|> Opts.flag
+        GD
+        GD
+        ( Opts.long "gradient-descent"
+            <> Opts.long "gd"
+            <> Opts.help "use naive gradient descent as the optimistaion (default)"
+        )
   pure TrainOpts {..}
+
+adams :: AdamParams Float
+adams = AdamParams {beta1 = 0.9, beta2 = 0.999, epsilon = 1e-16}
+
+adamP :: Opts.Parser Optimisation
+adamP = do
+  Opts.flag' () (Opts.long "adam" <> Opts.help "Use adam as the optimiser")
+  beta1 <-
+    Opts.option Opts.auto $
+      Opts.long "beta1" <> Opts.value (beta1 adams) <> Opts.help "beta1 in Adam"
+  beta2 <-
+    Opts.option Opts.auto $
+      Opts.long "beta1" <> Opts.value (beta2 adams) <> Opts.help "beta2 in Adam"
+  epsilon <-
+    Opts.option Opts.auto $
+      Opts.long "epsilon" <> Opts.value (epsilon adams) <> Opts.help "Stabilisation parameter epsilon in Adam"
+  pure $ Adam AdamParams {..}
+
+data Optimisation = GD | Adam (AdamParams Float)
+  deriving (Show, Eq, Ord, Generic)
 
 data RecognitionOpts = RecognitionOpts {modelDir :: !FilePath, input :: !FilePath, netFlavour :: !NetFlavour}
   deriving (Show, Eq, Ord, Generic)
