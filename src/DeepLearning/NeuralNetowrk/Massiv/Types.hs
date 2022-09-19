@@ -1095,7 +1095,7 @@ data AdamParams a = AdamParams {beta1, beta2, epsilon :: !a}
   deriving (Show, Eq, Ord, Generic)
 
 data SomeNetwork h i o a where
-  MkSomeNetwork :: Network h i hs o a -> SomeNetwork h i o a
+  MkSomeNetwork :: KnownNetwork i hs o => Network h i hs o a -> SomeNetwork h i o a
 
 data NetworkStat = NetworkStat {parameters :: Sum Int, layers :: DL.DList LayerInfo}
   deriving (Show, Eq, Ord, Generic)
@@ -1234,7 +1234,7 @@ instance
         )
         pure
         $ testEquality (typeRep @o) (typeRep @o')
-    MkSomeNetwork <$> getNetworkWith shape
+    give shape $ MkSomeNetwork <$> getNetworkWith shape
   {-# INLINE get #-}
 
 instance
