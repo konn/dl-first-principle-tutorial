@@ -88,8 +88,8 @@ import Control.Arrow ((>>>))
 import Control.DeepSeq (NFData (..))
 import Control.Monad (when)
 import Control.Subcategory.Linear
+import qualified Data.Bifunctor as Bi
 import qualified Data.DList as DL
-import Data.Functor ((<&>))
 import Data.Generics.Labels ()
 import Data.Kind (Type)
 import Data.Monoid (All (..), Ap (..), Sum (..))
@@ -574,9 +574,24 @@ data NeuralNetwork i ls o a = NeuralNetwork
   deriving (Generic, Eq)
   deriving anyclass (NFData)
 
-deriving instance
+instance
   (KnownNetwork i ls o, Persist a, U.Unbox a) =>
   Persist (NeuralNetwork i ls o a)
+  where
+  put NeuralNetwork {..} = do
+    put $ toNetworkHeader $ networkShape @i @ls @o
+    putNetworkBody recParams
+    putNetworkBody weights
+  get = do
+    hdr <- get
+    let sh = networkShape @i @ls @o
+    when (hdr /= toNetworkHeader sh) $
+      fail $
+        "NetworkHeader mismatched; (expected, got) = "
+          <> show (toNetworkHeader sh, hdr)
+    recParams <- getNetworkBodyWith sh
+    weights <- getNetworkBodyWith sh
+    pure NeuralNetwork {..}
 
 data SomeNeuralNetwork i o a where
   MkSomeNeuralNetwork :: NeuralNetwork i ls o a -> SomeNeuralNetwork i o a
@@ -585,7 +600,7 @@ instance Persist SomeNetworkShape where
   put (MkSomeNetworkShape sh) = put $ toNetworkHeader sh
   {-# INLINE put #-}
   get =
-    maybe (fail "invalid network header") pure
+    either (fail . ("SomeNetworkShape: invalid network header: " <>)) pure
       . fromNetworkHeader
       =<< get
 
@@ -599,9 +614,9 @@ instance
   where
   put (MkSomeNeuralNetwork (NeuralNetwork {..} :: NeuralNetwork i xs o a)) =
     withKnownNetwork recParams $ do
-      put $ MkSomeNetworkShape $ networkShape @i @xs @o
-      put recParams
-      put weights
+      put $ toNetworkHeader $ networkShape @i @xs @o
+      putNetworkBody recParams
+      putNetworkBody weights
   get = do
     MkSomeNetworkShape (sh :: NetworkShape i' xs o') <- get
     Refl <-
@@ -620,7 +635,8 @@ instance
         )
         pure
         $ testEquality (typeRep @o) (typeRep @o')
-    fmap MkSomeNeuralNetwork . NeuralNetwork <$> getNetworkBodyWith sh <*> getNetworkBodyWith sh
+    withNetworkShape sh $
+      fmap MkSomeNeuralNetwork . NeuralNetwork <$> getNetworkBodyWith sh <*> getNetworkBodyWith sh
 
 instance
   ( KnownNetwork i fs o
@@ -822,37 +838,39 @@ toNetworkHeader shape =
     , outputDim = fromIntegral $ dimVal @o
     }
 
-fromNetworkHeader :: NetworkHeader -> Maybe SomeNetworkShape
-fromNetworkHeader NetworkHeader {..} =
+fromNetworkHeader :: NetworkHeader -> Either String SomeNetworkShape
+fromNetworkHeader hdr@NetworkHeader {..} =
   case (someNatVal (fromIntegral inputDim), someNatVal (fromIntegral outputDim)) of
     (SomeNat (_ :: Proxy i), SomeNat (_ :: Proxy o)) -> do
-      MkSomeNetworkShape' net <- fromNetworkHeader' @i @o layerSpecs
+      MkSomeNetworkShape' net <-
+        Bi.first (("While decoding: " <> show hdr) <>) $
+          fromNetworkHeader' @i @o layerSpecs
       pure $ MkSomeNetworkShape net
 
 fromNetworkHeader' ::
   forall i o.
   (KnownNat i, KnownNat o) =>
   [Block] ->
-  Maybe (SomeNetworkShape' i o)
-fromNetworkHeader' [] =
-  testEquality (typeRep @i) (typeRep @o) <&> \case
-    Refl -> MkSomeNetworkShape' IsOutput
+  Either String (SomeNetworkShape' i o)
+fromNetworkHeader' [] = do
+  Refl <- dimCheck @i @o "Terminal node"
+  pure $ MkSomeNetworkShape' IsOutput
 fromNetworkHeader' (Single kind dim : rest) =
   case someNatVal $ fromIntegral dim of
-    SomeNat (_ :: Proxy i') -> case kind of
+    SomeNat (_ :: Proxy o') -> case kind of
       Aff -> do
-        MkSomeNetworkShape' net <- fromNetworkHeader' @i' @o rest
-        pure $ MkSomeNetworkShape' $ IsCons (SAff @i @i') net
+        MkSomeNetworkShape' net <- fromNetworkHeader' @o' @o rest
+        pure $ MkSomeNetworkShape' $ IsCons (SAff @i @o') net
       Lin -> do
-        MkSomeNetworkShape' net <- fromNetworkHeader' @i' @o rest
-        pure $ MkSomeNetworkShape' $ IsCons (SLin @i @i') net
+        MkSomeNetworkShape' net <- fromNetworkHeader' @o' @o rest
+        pure $ MkSomeNetworkShape' $ IsCons (SLin @i @o') net
       (Act ac) -> case someActivation ac of
         MkSomeActivation sact -> do
-          Refl <- testEquality (typeRep @i) (typeRep @i')
+          Refl <- dimCheck @i @o' ("Activation layer (" <> show ac <> ")")
           MkSomeNetworkShape' net <- fromNetworkHeader' @i @o rest
           pure $ MkSomeNetworkShape' $ IsCons (SAct sact) net
       BN -> do
-        Refl <- testEquality (typeRep @i) (typeRep @i')
+        Refl <- dimCheck @i @o' "Batchnorm layer"
         MkSomeNetworkShape' net <- fromNetworkHeader' @i @o rest
         pure $ MkSomeNetworkShape' $ IsCons SBN net
 fromNetworkHeader' (Residual block : rest) = do
@@ -860,10 +878,20 @@ fromNetworkHeader' (Residual block : rest) = do
   MkSomeNetworkShape' rest' <- fromNetworkHeader' @i @o rest
   pure $ MkSomeNetworkShape' $ IsSkip block' rest'
 
+dimCheck :: forall i i'. (KnownNat i, KnownNat i') => String -> Either String (i :~: i')
+dimCheck lab =
+  case testEquality (typeRep @i) (typeRep @i') of
+    Just r -> pure r
+    Nothing ->
+      Left $
+        lab
+          <> ": dimension mismatched; (expected, got) = "
+          <> show (dimVal @i, dimVal @i')
+
 demoteLayerSpecs :: NetworkShape i xs o -> [Block]
 demoteLayerSpecs IsOutput = []
 demoteLayerSpecs (IsCons (slk :: SLayerKind l k m) ns') =
-  Single (demoteLayerKind slk) (fromIntegral $ dimVal @k) : demoteLayerSpecs ns'
+  Single (demoteLayerKind slk) (fromIntegral $ dimVal @m) : demoteLayerSpecs ns'
 demoteLayerSpecs (IsSkip (blk :: NetworkShape i hs i) ns') =
   Residual (demoteLayerSpecs blk) : demoteLayerSpecs ns'
 
@@ -1203,6 +1231,13 @@ putNetworkWithHeader ::
   Put ()
 putNetworkWithHeader net = withKnownNetwork net $ do
   put $ toNetworkHeader $ networkShape @i @xs @o
+  putNetworkBody net
+
+putNetworkBody ::
+  (forall l x y. KnownLayerKind l x y => Persist (h l x y a)) =>
+  Network h i ls o a ->
+  Put ()
+putNetworkBody net =
   getAp $ foldMapNetwork (Ap . put) net
 
 instance
