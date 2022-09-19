@@ -4,7 +4,11 @@ work-dir: ".stack-ide"
 packages:
 - .
 
+apply-ghc-options: everything
+rebuild-ghc-options: true
+
 ghc-options:
+  $everything: "-O0 -haddock"
   $locals: "-O0 -haddock"
 
 extra-deps:
