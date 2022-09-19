@@ -235,9 +235,9 @@ train ::
   NeuralNetwork (n * n) ls 10 Float
   #-}
 train MNISTParams {..} =
-  trainGDF
+  trainAdamF
     timeStep
     dumpingFactor
-    -- adamParams
+    adamParams
     1
     crossEntropy
