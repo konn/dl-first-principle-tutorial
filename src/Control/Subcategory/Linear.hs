@@ -89,9 +89,13 @@ module Control.Subcategory.Linear (
   genericSinkToVector,
   GFromVec (),
   computeV,
+  computeV',
   delayV,
+  delayV',
   computeM,
+  computeM',
   delayM,
+  delayM',
   sumRows,
   sumCols,
   dimVal,
@@ -155,14 +159,49 @@ infixl 6 ^+^, ^-^, ^+, +^, ^-, -^
 computeV :: (M.Manifest r a) => Vec M.D n a -> Vec r n a
 computeV = coerce M.computeP
 
+computeV' :: forall r n a s. (M.Manifest r a, Num a, KnownNat n, Reifies s W) => BVar s (Vec M.D n a) -> BVar s (Vec r n a)
+computeV' = liftOp1 $ op1 $ \x ->
+  (computeV x, delayV)
+
 delayV :: (M.Source r a) => Vec r n a -> Vec M.D n a
 delayV = coerce M.delay
 
 computeM :: (M.Manifest r a) => Mat M.D n m a -> Mat r n m a
 computeM = coerce M.computeP
 
+computeM' :: forall r n m a s. (M.Manifest r a, Num a, KnownNat n, KnownNat m, Reifies s W) => BVar s (Mat M.D n m a) -> BVar s (Mat r n m a)
+computeM' = liftOp1 $ op1 $ \x ->
+  (computeM x, delayM)
+
 delayM :: (M.Source r a) => Mat r n m a -> Mat M.D n m a
 delayM = coerce M.delay
+
+delayM' ::
+  ( M.Source r a
+  , M.Numeric r a
+  , KnownNat n
+  , KnownNat m
+  , M.Load r M.Ix2 a
+  , Reifies s W
+  , M.Manifest r a
+  ) =>
+  BVar s (Mat r n m a) ->
+  BVar s (Mat M.D n m a)
+{-# INLINE delayM' #-}
+delayM' = liftOp1 $ op1 $ \x -> (delayM x, computeM)
+
+delayV' ::
+  ( M.Source r a
+  , M.Numeric r a
+  , KnownNat n
+  , M.Load r M.Ix1 a
+  , Reifies s W
+  , M.Manifest r a
+  ) =>
+  BVar s (Vec r n a) ->
+  BVar s (Vec M.D n a)
+{-# INLINE delayV' #-}
+delayV' = liftOp1 $ op1 $ \x -> (delayV x, computeV)
 
 (^+^) :: (M.Numeric r a) => Vec r n a -> Vec r n a -> Vec r n a
 {-# INLINE (^+^) #-}
@@ -248,14 +287,14 @@ infixl 7 !*!:, !*:
   ) =>
   BVar s (Mat r n m a) ->
   BVar s (Vec r n a) ->
-  BVar s (Vec r m a)
+  BVar s (Vec M.D m a)
 {-# INLINE (!*:) #-}
 (!*:) = liftOp2 $
   op2 $ \mNM vN ->
-    ( computeV $ mNM !* vN
+    ( mNM !* vN
     , \dzdy ->
-        ( asColumn dzdy !*! asRow vN
-        , computeV (computeM (trans mNM) !* dzdy)
+        ( computeM (asColumn dzdy) !*! asRow vN
+        , computeV (trans mNM !* dzdy)
         )
     )
 
@@ -270,14 +309,14 @@ duplicateAsCols' ::
   , M.Load r M.Ix2 a
   ) =>
   BVar s (Vec r n a) ->
-  BVar s (Mat r m n a)
+  BVar s (Mat M.D m n a)
 {-# INLINE duplicateAsCols' #-}
-duplicateAsCols' = liftOp1 $
+duplicateAsCols' =
   case sNat @1 %<=? sNat @m of
-    SFalse -> 0.0
-    STrue ->
+    SFalse -> const $ auto $ Mat $ M.replicate M.Par (Sz2 (dimVal @n) 0) 0.0
+    STrue -> liftOp1 $
       op1 $ \x ->
-        ( computeM $ duplicateAsCols @m @r @n @a x
+        ( duplicateAsCols @m @r @n @a x
         , computeV . sumRows
         )
 
@@ -292,18 +331,19 @@ duplicateAsRows' ::
   , M.Load r M.Ix2 a
   ) =>
   BVar s (Vec r n a) ->
-  BVar s (Mat r n m a)
+  BVar s (Mat M.D n m a)
 {-# INLINE duplicateAsRows' #-}
-duplicateAsRows' = liftOp1 $
+duplicateAsRows' =
   case sNat @1 %<=? sNat @m of
-    SFalse -> 0.0
-    STrue ->
+    SFalse -> const $ auto $ Mat $ M.replicate M.Par (Sz2 (dimVal @n) 0) 0.0
+    STrue -> liftOp1 $
       op1 $ \x ->
-        ( computeM $ duplicateAsRows @m @r @n @a x
+        ( duplicateAsRows @m @r @n @a x
         , computeV . sumCols
         )
 
 sumRows' ::
+  forall s r a n m.
   ( Reifies s W
   , M.Source r a
   , Num a
@@ -314,12 +354,13 @@ sumRows' ::
   , M.Manifest r a
   ) =>
   BVar s (Mat r n m a) ->
-  BVar s (Vec r m a)
+  BVar s (Vec M.D m a)
 sumRows' = liftOp1 $
   op1 $ \mat ->
-    (computeV $ sumRows mat, computeM . duplicateAsCols)
+    (sumRows mat, computeM . duplicateAsCols . computeV @r)
 
 sumCols' ::
+  forall s r a n m.
   ( Reifies s W
   , M.Source r a
   , Num a
@@ -330,10 +371,10 @@ sumCols' ::
   , M.Manifest r a
   ) =>
   BVar s (Mat r n m a) ->
-  BVar s (Vec r n a)
+  BVar s (Vec M.D n a)
 sumCols' = liftOp1 $
   op1 $ \mat ->
-    (computeV $ sumCols mat, computeM . duplicateAsRows)
+    (sumCols mat, computeM . duplicateAsRows . computeV @r)
 
 {-
 >>> arr = Vec @M.U @3 $ M.fromList M.Par [1,2,3]
@@ -428,7 +469,7 @@ instance
   {-# INLINE (/) #-}
 
 instance
-  (KnownNat n, M.Load r M.Ix1 a, M.NumericFloat r a, M.Manifest r a) =>
+  (KnownNat n, M.Load r M.Ix1 a, M.NumericFloat r a) =>
   Floating (Vec r n a)
   where
   pi = repeatVec pi
@@ -437,8 +478,6 @@ instance
   {-# INLINE exp #-}
   log = coerce M.logA
   {-# INLINE log #-}
-  logBase = coerce $ fmap M.computeP . M.logBaseA
-  {-# INLINE logBase #-}
   sin = coerce M.sinA
   {-# INLINE sin #-}
   cos = coerce M.cosA
@@ -489,7 +528,7 @@ instance (M.NumericFloat r a, KnownNat n, KnownNat m, M.Load r M.Ix2 a) => Fract
   {-# INLINE (/) #-}
 
 instance
-  (KnownNat n, KnownNat m, M.Load r M.Ix2 a, M.NumericFloat r a, M.Manifest r a) =>
+  (KnownNat n, KnownNat m, M.Load r M.Ix2 a, M.NumericFloat r a) =>
   Floating (Mat r n m a)
   where
   pi = repeatMat pi
@@ -498,8 +537,6 @@ instance
   {-# INLINE exp #-}
   log = coerce M.logA
   {-# INLINE log #-}
-  logBase = coerce $ fmap M.computeP . M.logBaseA
-  {-# INLINE logBase #-}
   sin = coerce M.sinA
   {-# INLINE sin #-}
   cos = coerce M.cosA
@@ -967,10 +1004,10 @@ asRow :: forall r n a. (M.Size r, KnownNat n) => Vec r n a -> Mat r n 1 a
 asRow = coerce $ M.resize' (M.Sz2 1 (dimVal @n))
 
 instance
-  (M.NumericFloat r a, KnownNat n, M.Manifest r a, M.Load r M.Ix1 a) =>
+  (M.NumericFloat r a, M.Source r a, KnownNat n, M.Load r M.Ix1 a) =>
   VectorSpace a (Vec r n a)
   where
-  reps = cpure
+  reps = repeatVec
   {-# INLINE reps #-}
   (.+) = (+^)
   {-# INLINE (.+) #-}
@@ -994,10 +1031,10 @@ instance
   {-# INLINE sumS #-}
 
 instance
-  (M.NumericFloat r a, KnownNat n, KnownNat m, M.Manifest r a, M.Load r M.Ix2 a) =>
+  (M.NumericFloat r a, KnownNat n, KnownNat m, M.Source r a, M.Load r M.Ix2 a) =>
   VectorSpace a (Mat r n m a)
   where
-  reps = cpure
+  reps = repeatMat
   {-# INLINE reps #-}
   (.+) = coerce (M.+.)
   {-# INLINE (.+) #-}

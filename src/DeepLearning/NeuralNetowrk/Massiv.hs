@@ -225,7 +225,7 @@ runLayer pass = \case
   l@AffRP {} -> \aff x ->
     let w = aff ^^. affineMatL
         b = aff ^^. affineBiasL
-     in T2 (w !*!: x + duplicateAsCols' b) (auto l)
+     in T2 (computeM' $ delayM' (w !*!: x) + duplicateAsCols' b) (auto l)
   l@LinRP -> \lin x ->
     let w = lin ^^. linearMatL
      in T2 (w !*!: x) (auto l)
@@ -239,11 +239,11 @@ runLayer pass = \case
      in case pass of
           Train -> \x ->
             let !m = fromIntegral $ dimVal @m
-                batchMean = sumRows' x /. m
-                xRel = x - duplicateAsCols' batchMean
-                batchDev = sumRows' (xRel * xRel) /. m
-                xHat = xRel / duplicateAsCols' (sqrt (batchDev +. 1e-12))
-                x' = duplicateAsCols' gamma * xHat + duplicateAsCols' beta
+                batchMean = computeV' $ sumRows' x /. m
+                xRel = computeM' @M.U $ delayM' x - duplicateAsCols' batchMean
+                batchDev = computeV' $ sumRows' (xRel * xRel) /. m
+                xHat = delayM' xRel / duplicateAsCols' (sqrt (batchDev +. 1e-12))
+                x' = computeM' $ duplicateAsCols' gamma * xHat + duplicateAsCols' beta
                 bRP =
                   isoVar2 BatRP (\(BatRP z s) -> (z, s)) batchMean batchDev
              in T2 x' bRP
@@ -252,15 +252,15 @@ runLayer pass = \case
                 out1 =
                   (x - auto (computeM $ duplicateAsCols mu))
                     / auto (computeM (duplicateAsCols (sqrt (sigma +. eps))))
-             in T2 (duplicateAsCols' gamma * out1 + duplicateAsCols' beta) (auto l)
+             in T2 (computeM' $ duplicateAsCols' gamma * delayM' out1 + duplicateAsCols' beta) (auto l)
   (l@LayerNormRP {} :: RecParams _ i _ a) -> \lay x ->
     let coeffs = lay ^^. layerNormL
         i = fromIntegral $ dimVal @i
-        mean = sumCols' x /. i
-        xRel = x - duplicateAsRows' mean
-        dev = sumCols' (xRel * xRel) /. i
-        xHat = (x - duplicateAsRows' mean) / sqrt (duplicateAsRows' dev + 1e-12)
-        x' = duplicateAsCols' (coeffs ^^. #scale) * xHat - duplicateAsCols' (coeffs ^^. #shift)
+        mean = computeV' @M.U (sumCols' x) /. i
+        xRel = computeM' @M.U $ delayM' x - duplicateAsRows' mean
+        dev = computeV' @M.U $ sumCols' (xRel * xRel) /. i
+        xHat = (delayM' x - duplicateAsRows' mean) / sqrt (duplicateAsRows' dev + 1e-12)
+        x' = computeM' $ duplicateAsCols' (coeffs ^^. #scale) * xHat - duplicateAsCols' (coeffs ^^. #shift)
      in T2 x' (auto l)
 
 applyActivatorBV ::

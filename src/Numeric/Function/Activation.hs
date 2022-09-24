@@ -1,10 +1,12 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Numeric.Function.Activation (sigmoid, relu, softmax) where
 
 import Control.Arrow
 import Control.Subcategory
-import Control.Subcategory.Linear (Mat, duplicateAsRows', sumCols')
+import Control.Subcategory.Linear (Mat, computeM', computeV', delayM', duplicateAsRows', sumCols')
 import Data.Massiv.Array (Ix1, Ix2, Load, Manifest, NumericFloat)
 import Data.Type.Natural
 import Numeric.Backprop (BVar, Backprop, Reifies, W, liftOp1, op1)
@@ -22,6 +24,7 @@ relu =
     op1 (cmap (max 0) &&& czipWith (\x d -> if x < 0 then 0 else d))
 
 softmax ::
+  forall s r m k a.
   ( Reifies s W
   , KnownNat m
   , KnownNat k
@@ -34,4 +37,4 @@ softmax ::
   BVar s (Mat r m k a)
 softmax us =
   let exps = exp us
-   in exps / duplicateAsRows' (sumCols' exps)
+   in computeM' $ delayM' exps / duplicateAsRows' (computeV' @r $ sumCols' exps)
