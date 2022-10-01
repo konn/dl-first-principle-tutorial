@@ -2,6 +2,7 @@ resolver: lts-19.21
 
 packages:
 - .
+- mnist-core
 
 extra-deps:
   # Workaround for GHC 9.0

@@ -2,6 +2,8 @@ cradle:
   stack:
     stackYaml: stack-ide.yaml
     components:
+    - path: "./mnist-core/src"
+      component: mnist-core:lib
     - path: ./src
       component: dl-first-principle-tutorial:lib
     - path: "./app/iris"

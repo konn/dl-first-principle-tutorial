@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.34.4.
+-- This file has been generated from package.yaml by hpack version 0.35.0.
 --
 -- see: https://github.com/sol/hpack
 
@@ -27,7 +27,6 @@ library
   exposed-modules:
       Control.Subcategory.Linear
       Data.Deriving.Numeric
-      Data.Format.MNIST
       Data.Format.SpaceSeparated
       DeepLearning.Circles
       DeepLearning.Circles.Types
@@ -78,6 +77,7 @@ library
     , massiv-io
     , massiv-persist
     , matrix
+    , mnist-core
     , mwc-random
     , persist
     , random
@@ -140,6 +140,7 @@ executable circles
     , massiv-io
     , massiv-persist
     , matrix
+    , mnist-core
     , mwc-random
     , optparse-applicative
     , persist
@@ -204,6 +205,7 @@ executable iris
     , massiv-io
     , massiv-persist
     , matrix
+    , mnist-core
     , mwc-random
     , optparse-applicative
     , persist
@@ -267,6 +269,7 @@ executable mnist
     , massiv-io
     , massiv-persist
     , matrix
+    , mnist-core
     , mwc-random
     , optparse-applicative
     , persist
@@ -331,6 +334,7 @@ executable spirals-batchnorm
     , massiv-io
     , massiv-persist
     , matrix
+    , mnist-core
     , mwc-random
     , optparse-applicative
     , persist

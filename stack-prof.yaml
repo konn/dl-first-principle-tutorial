@@ -3,6 +3,8 @@ work-dir: ".stack-prof"
 
 packages:
 - .
+- mnist-core
+
 apply-ghc-options: everything
 rebuild-ghc-options: true
 

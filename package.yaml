@@ -52,6 +52,7 @@ dependencies:
 - massiv-io
 - massiv-persist
 - matrix
+- mnist-core
 - mwc-random
 - persist
 - random
@@ -130,6 +131,7 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies: 
+    - mnist-core
     - dl-first-principle-tutorial
     - optparse-applicative
     - time

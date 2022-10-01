@@ -3,6 +3,7 @@ work-dir: ".stack-ide"
 
 packages:
 - .
+- mnist-core
 
 apply-ghc-options: everything
 rebuild-ghc-options: true
